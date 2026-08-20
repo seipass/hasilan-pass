@@ -1,0 +1,47 @@
+[package]
+name = "hasilan-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+rust-version = "1.92"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+hasilan-bitwarden-compat = { path = "../crates/bitwarden-compat" }
+hasilan-protocol = { path = "../crates/protocol" }
+hasilan-vault = { path = "../crates/vault" }
+libfuzzer-sys = "=0.4.13"
+serde_json = "1.0.143"
+
+[[bin]]
+name = "bitwarden_import"
+path = "fuzz_targets/bitwarden_import.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vault_json"
+path = "fuzz_targets/vault_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "protocol_json"
+path = "fuzz_targets/protocol_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "uri_match"
+path = "fuzz_targets/uri_match.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

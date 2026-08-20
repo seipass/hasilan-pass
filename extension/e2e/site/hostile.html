@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hasilan hostile-page fixture</title>
+    <style>
+      :root { color-scheme: light; font: 15px/1.5 system-ui, sans-serif; }
+      body { margin: 0; padding: 24px; background: #eef2ed; }
+      main { display: grid; max-width: 980px; margin: auto; gap: 18px; }
+      section { padding: 18px; border: 1px solid #c5cec4; border-radius: 12px; background: white; }
+      h1, h2 { margin-top: 0; }
+      .frames { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+      iframe { box-sizing: border-box; width: 100%; min-height: 245px; border: 1px solid #aab5aa; border-radius: 9px; background: white; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Hostile autofill boundaries</h1>
+      <section>
+        <h2>Page-owned open shadow root</h2>
+        <div id="shadow-host"></div>
+      </section>
+      <div class="frames">
+        <section>
+          <h2>Same-origin frame</h2>
+          <iframe name="same-frame" src="/frame.html" title="Same-origin credential frame"></iframe>
+        </section>
+        <section>
+          <h2>Cross-origin frame</h2>
+          <iframe name="cross-frame" src="http://localhost:19090/frame.html" title="Cross-origin credential frame"></iframe>
+        </section>
+      </div>
+    </main>
+    <script>
+      window.__hasilanObservedMenus = [];
+      new MutationObserver((records) => {
+        for (const record of records) {
+          for (const node of record.addedNodes) {
+            if (!(node instanceof HTMLElement) || node.dataset.hasilanPass !== "menu") continue;
+            window.__hasilanObservedMenus.push({
+              readableShadow: node.shadowRoot !== null,
+              readableText: node.textContent,
+            });
+          }
+        }
+      }).observe(document.documentElement, { childList: true, subtree: true });
+
+      const root = document.querySelector("#shadow-host").attachShadow({ mode: "open" });
+      root.innerHTML = `
+        <style>
+          form, label { display: grid; gap: 8px; }
+          input, button { box-sizing: border-box; min-height: 40px; border: 1px solid #89958a; border-radius: 7px; padding: 7px 9px; font: inherit; }
+          button { color: white; background: #183923; font-weight: 700; }
+        </style>
+        <form>
+          <label>Shadow username <input autocomplete="username" name="username" type="text" /></label>
+          <label>Shadow password <input autocomplete="current-password" name="password" type="password" /></label>
+          <button type="submit">Shadow sign in</button>
+        </form>
+      `;
+      root.querySelector("form").addEventListener("submit", (event) => event.preventDefault());
+    </script>
+  </body>
+</html>

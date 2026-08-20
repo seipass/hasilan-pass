@@ -1,0 +1,70 @@
+{
+  "manifest_version": 3,
+  "name": "Hasilan Pass",
+  "short_name": "Hasilan",
+  "version": "0.1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3hWFOEh/lt80TYpz4qZIog72TFzRtxiXLm4Z98JaZYTPfzeXXi5IGDK1/YDayI5d9bU1u+GkV9t1j7rPmcT2O959KJn6JCmH/7yfdsIoulidH4bxc14fABmm0jWW3L6hppdnZFkeGurtM+BsnExAthjBQn7Cg4QQDA75uqHreNMazEkTBzBt/gqHsa3BQb5F8dq+94WjTzhX1ZMrSlGh5Vz1dLZ5cAJhes2XkOVhYNg5uFY1HGc+FOPt8W/vWI0gC3UpfyASV5SKIeWPn/J4OWBAhkBNFAWqhAShWVdn1YTGbBwLkzTgRQBXgjAGbFuzsSB20Sfz/WYOYvNCX53HdwIDAQAB",
+  "description": "Zero-knowledge password manager for your self-hosted Hasilan Pass server.",
+  "minimum_chrome_version": "121",
+  "background": {
+    "scripts": ["assets/background.js"],
+    "service_worker": "assets/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Hasilan Pass",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "permissions": [
+    "activeTab",
+    "alarms",
+    "clipboardWrite",
+    "contextMenus",
+    "scripting",
+    "storage"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "hasilan-pass@hasilan.org",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": [
+          "authenticationInfo",
+          "browsingActivity",
+          "financialAndPaymentInfo",
+          "personallyIdentifyingInfo"
+        ]
+      }
+    },
+    "gecko_android": {
+      "strict_min_version": "142.0"
+    }
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+L",
+        "mac": "Command+Shift+L"
+      }
+    }
+  }
+}

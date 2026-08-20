@@ -1,0 +1,451 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  rust:
+    name: Rust format, lint, and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install the workspace Rust toolchain
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy
+          rustup default 1.92.0
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Run strict Clippy
+        run: cargo clippy --workspace --exclude hasilan-desktop --all-targets --all-features -- -D warnings
+      - name: Run Rust tests
+        run: cargo test --workspace --exclude hasilan-desktop --all-features
+
+  frontend:
+    name: Web and extension
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@d15e628ca66d93ee5f352c71671a7bc6a97af5c9 # v6.0.8
+      - name: Install Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install Rust and the WASM target
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --target wasm32-unknown-unknown
+          rustup default 1.92.0
+          cargo install wasm-bindgen-cli --version 0.2.127 --locked
+      - name: Install locked frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Keep all release-facing versions synchronized
+        run: pnpm verify:release-version
+      - name: Generate shared Rust WASM bindings
+        run: ./scripts/build-wasm.sh
+      - name: Run frontend security and type lint
+        run: pnpm lint:frontend
+      - name: Run frontend unit tests
+        run: pnpm test:frontend
+      - name: Build Web Vault and extension
+        run: |
+          pnpm --dir web build
+          pnpm --dir extension build
+      - name: Validate the Firefox extension package
+        run: pnpm --dir extension lint:firefox
+
+  desktop:
+    name: Native desktop
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install Tauri Linux prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - name: Install pnpm
+        uses: pnpm/action-setup@d15e628ca66d93ee5f352c71671a7bc6a97af5c9 # v6.0.8
+      - name: Install Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --component clippy
+          rustup default 1.92.0
+      - name: Install locked desktop dependencies
+        run: pnpm install --frozen-lockfile --filter @hasilan/desktop...
+      - name: Lint and test desktop layers
+        run: |
+          pnpm --dir desktop check
+          pnpm --dir desktop test
+          cargo clippy --package hasilan-desktop-core --package hasilan-desktop --all-targets --all-features -- -D warnings
+          cargo test --package hasilan-desktop-core --package hasilan-desktop --all-features
+      - name: Build the native desktop executable
+        run: pnpm --dir desktop tauri build --no-bundle
+
+  android:
+    name: Android client
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@d15e628ca66d93ee5f352c71671a7bc6a97af5c9 # v6.0.8
+      - name: Install Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install JDK, Rust, and Android targets
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Configure Rust and Android SDK components
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --target aarch64-linux-android,x86_64-linux-android
+          rustup default 1.92.0
+          sdkmanager="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$sdkmanager" "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;27.3.13750724"
+          printf 'NDK_HOME=%s\n' "${ANDROID_HOME}/ndk/27.3.13750724" >> "$GITHUB_ENV"
+          ndk_bin="${ANDROID_HOME}/ndk/27.3.13750724/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          printf '%s\n' "$ndk_bin" >> "$GITHUB_PATH"
+          {
+            printf 'CC_aarch64_linux_android=%s\n' "$ndk_bin/aarch64-linux-android24-clang"
+            printf 'AR_aarch64_linux_android=%s\n' "$ndk_bin/llvm-ar"
+            printf 'CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=%s\n' "$ndk_bin/aarch64-linux-android24-clang"
+            printf 'CC_x86_64_linux_android=%s\n' "$ndk_bin/x86_64-linux-android24-clang"
+            printf 'AR_x86_64_linux_android=%s\n' "$ndk_bin/llvm-ar"
+            printf 'CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER=%s\n' "$ndk_bin/x86_64-linux-android24-clang"
+          } >> "$GITHUB_ENV"
+      - name: Install locked desktop dependencies
+        run: pnpm install --frozen-lockfile --filter @hasilan/desktop...
+      - name: Check Android Rust, Kotlin, parser, and instrumentation-test compilation
+        run: |
+          cargo check --package hasilan-desktop --target aarch64-linux-android
+          cd desktop/src-tauri/gen/android
+          ./gradlew :app:testUniversalDebugUnitTest :app:lintUniversalDebug :app:compileUniversalDebugAndroidTestKotlin
+      - name: Build x86_64 test APK with Tauri
+        # Tauri owns the Rust/JNI build connection. Produce the emulator ABI before Gradle runs
+        # the device test, then avoid asking Gradle to recreate that transient Tauri connection.
+        run: pnpm --dir desktop tauri android build --debug --target x86_64 --apk --ci
+      - name: Run Android device security smoke test
+        # The AOSP image deliberately avoids Play Services: the app's basic vault flow must not
+        # depend on Google services. Pin the action commit for reproducible CI execution.
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 35
+          target: default
+          arch: x86_64
+          emulator-options: -no-window -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: |
+            cd desktop/src-tauri/gen/android
+            # The universal flavor normally compiles every ABI. Restrict this device gate to
+            # the emulated x86_64 ABI. Tauri produced its shared Rust cdylib in the preceding
+            # step, so Gradle must not re-enter Tauri's one-shot build connection here.
+            ./gradlew :app:connectedUniversalDebugAndroidTest \
+              -PabiList=x86_64 -ParchList=x86_64 -PtargetList=x86_64 \
+              -x :app:rustBuildX86_64Debug --stacktrace
+      - name: Build arm64 debug APK and AAB
+        run: pnpm --dir desktop tauri android build --debug --target aarch64 --apk --aab --ci
+      - name: Preserve Android smoke artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: android-debug
+          path: |
+            desktop/src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+            desktop/src-tauri/gen/android/app/build/outputs/bundle/**/*.aab
+          if-no-files-found: error
+          retention-days: 14
+
+  desktop-platform:
+    name: Native desktop (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            runner: windows-2025
+            executable: target/release/hasilan-desktop.exe
+          - name: macOS
+            runner: macos-15
+            executable: target/release/hasilan-desktop
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@d15e628ca66d93ee5f352c71671a7bc6a97af5c9 # v6.0.8
+      - name: Install Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          rustup default 1.92.0
+      - name: Install locked desktop dependencies
+        run: pnpm install --frozen-lockfile --filter @hasilan/desktop...
+      - name: Test the portable and native layers
+        run: |
+          pnpm --dir desktop check
+          pnpm --dir desktop test
+          cargo test --locked --package hasilan-desktop-core --package hasilan-desktop --all-features
+      - name: Compile the platform-native executable
+        run: pnpm --dir desktop tauri build --no-bundle
+      - name: Require the expected native executable
+        run: >-
+          node -e "const fs=require('node:fs');if(!fs.existsSync(process.argv[1]))throw new Error('native executable was not produced')"
+          "${{ matrix.executable }}"
+
+  integration:
+    name: PostgreSQL API and native-client journey
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17.10-alpine3.23
+        env:
+          POSTGRES_DB: hasilan_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: integration-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d hasilan_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          rustup default 1.92.0
+      - name: Run the complete PostgreSQL journey
+        env:
+          HP_TEST_DATABASE_URL: postgresql://postgres:integration-only-password@127.0.0.1:5432/hasilan_test
+        run: cargo test --package hasilan-server --test api_journey -- --nocapture
+
+  e2e:
+    name: Web and installed-extension cross-client journey
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:17.10-alpine3.23
+        env:
+          POSTGRES_DB: hasilan_e2e
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: e2e-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d hasilan_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:e2e-only-password@127.0.0.1:5432/hasilan_e2e
+      HP_BIND: 127.0.0.1:18080
+      HP_PUBLIC_URL: http://localhost:18080
+      HP_ALLOWED_ORIGINS: http://localhost:5173,http://127.0.0.1:5173,http://127.0.0.1:19090
+      HP_WEBAUTHN_ORIGIN: http://localhost:5173
+      HP_WEBAUTHN_RP_ID: localhost
+      HP_PRODUCTION: "false"
+      HP_E2E_API_URL: http://127.0.0.1:18080
+      HP_DEV_API_TARGET: http://127.0.0.1:18080
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@d15e628ca66d93ee5f352c71671a7bc6a97af5c9 # v6.0.8
+      - name: Install Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install Rust and the WASM target
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --target wasm32-unknown-unknown
+          rustup default 1.92.0
+          cargo install wasm-bindgen-cli --version 0.2.127 --locked
+      - name: Install locked dependencies and Chromium
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --dir web exec playwright install --with-deps chromium
+          ./scripts/build-wasm.sh
+      - name: Generate independent ephemeral server secrets
+        run: |
+          token_pepper=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')
+          mfa_key=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')
+          echo "::add-mask::$token_pepper"
+          echo "::add-mask::$mfa_key"
+          printf 'HP_TOKEN_PEPPER=%s\n' "$token_pepper" >> "$GITHUB_ENV"
+          printf 'HP_MFA_ENCRYPTION_KEY=%s\n' "$mfa_key" >> "$GITHUB_ENV"
+      - name: Start the API server
+        run: |
+          cargo build --locked --package hasilan-server
+          target/debug/hasilan-server > "$RUNNER_TEMP/hasilan-server.log" 2>&1 &
+          server_pid=$!
+          printf 'HP_SERVER_PID=%s\n' "$server_pid" >> "$GITHUB_ENV"
+          for _ in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:18080/health/ready >/dev/null; then
+              exit 0
+            fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              sed -n '1,200p' "$RUNNER_TEMP/hasilan-server.log" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          sed -n '1,200p' "$RUNNER_TEMP/hasilan-server.log" >&2
+          exit 1
+      - name: Run the Web Vault journey
+        run: pnpm --dir web test:e2e
+      - name: Run extension autofill, save, sync, and Web confirmation
+        run: pnpm --dir extension test:e2e
+      - name: Stop the API server
+        if: always()
+        run: |
+          if [[ -n ${HP_SERVER_PID:-} ]] && kill -0 "$HP_SERVER_PID" 2>/dev/null; then
+            kill "$HP_SERVER_PID"
+            wait "$HP_SERVER_PID" || true
+          fi
+
+  audit:
+    name: Dependency, license, and secret audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@d15e628ca66d93ee5f352c71671a7bc6a97af5c9 # v6.0.8
+      - name: Install Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install Rust audit tools
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          rustup default 1.92.0
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo install cargo-deny --version 0.20.2 --locked
+      - name: Audit Rust advisories
+        # sqlx's metapackage records its disabled MySQL backend (and rsa) in
+        # Cargo.lock. cargo-deny below checks the activated feature graph and
+        # verifies that RUSTSEC-2023-0071 is not reachable by this workspace.
+        run: cargo audit --ignore RUSTSEC-2023-0071
+      - name: Audit fuzz-harness advisories
+        run: cargo audit --file fuzz/Cargo.lock
+      - name: Enforce Rust licenses, bans, and sources
+        run: cargo deny check
+      - name: Audit production frontend dependencies
+        run: pnpm audit --prod --audit-level high
+      - name: Scan the repository for committed secrets
+        run: ./scripts/check-secrets.sh
+
+  fuzz:
+    name: Parser fuzz smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install pinned nightly and cargo-fuzz
+        run: |
+          rustup toolchain install nightly-2026-08-01 --profile minimal
+          cargo install cargo-fuzz --version 0.13.2 --locked
+      - name: Build all fuzz targets
+        run: cargo +nightly-2026-08-01 fuzz build
+      - name: Smoke every untrusted-input boundary
+        run: |
+          for target in bitwarden_import vault_json protocol_json uri_match; do
+            cargo +nightly-2026-08-01 fuzz run "$target" "fuzz/corpus/$target" -- -max_total_time=10 -rss_limit_mb=2048
+          done
+
+  containers:
+    name: Clean-clone Compose, backup, and restore
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      COMPOSE_PROJECT_NAME: hasilan-ci
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Validate development and production Compose models
+        run: |
+          docker compose config --quiet
+          HP_HOSTNAME=passwords.example.test docker compose -f compose.yaml -f compose.production.yaml config --quiet
+      - name: Build and start from the clean checkout
+        run: docker compose up --build --detach --wait
+      - name: Verify proxy, API, and security headers
+        run: |
+          curl --fail --silent --show-error http://127.0.0.1:8080/health/ready | grep '"database":"ok"'
+          curl --fail --silent --show-error --dump-header "$RUNNER_TEMP/headers" --output "$RUNNER_TEMP/index.html" http://127.0.0.1:8080/
+          grep --ignore-case '^Content-Security-Policy:' "$RUNNER_TEMP/headers"
+          grep --ignore-case '^X-Content-Type-Options: nosniff' "$RUNNER_TEMP/headers"
+      - name: Exercise backup and guarded restore
+        run: |
+          mkdir -p "$RUNNER_TEMP/backups"
+          ./scripts/backup.sh "$RUNNER_TEMP/backups"
+          backup_directory=$(find "$RUNNER_TEMP/backups" -mindepth 1 -maxdepth 1 -type d -print -quit)
+          HP_RESTORE_CONFIRM=restore-hasilan-pass ./scripts/restore.sh "$backup_directory"
+          curl --fail --silent --show-error http://127.0.0.1:8080/health/ready | grep '"database":"ok"'
+      - name: Remove synthetic Compose data
+        if: always()
+        run: docker compose down --volumes --remove-orphans

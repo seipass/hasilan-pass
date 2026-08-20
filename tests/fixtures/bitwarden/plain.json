@@ -1,0 +1,167 @@
+{
+  "encrypted": false,
+  "folders": [
+    {
+      "id": "0f69c822-2502-4eb4-9274-0ccfacd9949b",
+      "name": "Work"
+    }
+  ],
+  "items": [
+    {
+      "id": "e8847da7-11d8-4f50-8973-e3788253f329",
+      "folderId": "0f69c822-2502-4eb4-9274-0ccfacd9949b",
+      "organizationId": null,
+      "collectionIds": null,
+      "name": "Example login",
+      "notes": "Synthetic compatibility fixture",
+      "type": 1,
+      "login": {
+        "username": "alice@example.com",
+        "password": "correct horse",
+        "passwordRevisionDate": "2026-08-11T03:04:05Z",
+        "uris": [
+          {
+            "uri": "https://example.com/login",
+            "match": 0
+          }
+        ],
+        "totp": "JBSWY3DPEHPK3PXP",
+        "fido2Credentials": [
+          {
+            "credentialId": "synthetic-credential-id",
+            "keyType": "public-key",
+            "keyAlgorithm": "ECDSA",
+            "keyCurve": "P-256",
+            "keyValue": "synthetic-private-key-material",
+            "rpId": "example.com",
+            "userHandle": "synthetic-user-handle",
+            "userName": "alice@example.com",
+            "counter": "7",
+            "rpName": "Example",
+            "userDisplayName": "Alice",
+            "discoverable": "true",
+            "creationDate": "2026-08-10T03:04:05Z"
+          }
+        ]
+      },
+      "favorite": true,
+      "reprompt": 0,
+      "fields": [
+        {
+          "name": "environment",
+          "value": "production",
+          "type": 0,
+          "linkedId": null
+        }
+      ],
+      "passwordHistory": [
+        {
+          "password": "previous synthetic password",
+          "lastUsedDate": "2026-08-01T03:04:05Z"
+        }
+      ],
+      "revisionDate": "2026-08-11T03:04:05Z",
+      "creationDate": "2026-08-01T03:04:05Z",
+      "deletedDate": null,
+      "archivedDate": null
+    },
+    {
+      "id": "95e97822-e2dd-48a7-ad9b-259516ca3d12",
+      "folderId": null,
+      "organizationId": null,
+      "collectionIds": null,
+      "name": "Secure note",
+      "notes": "Only synthetic data",
+      "type": 2,
+      "secureNote": { "type": 0 },
+      "favorite": false,
+      "reprompt": 0,
+      "fields": null,
+      "passwordHistory": null,
+      "revisionDate": "2026-08-11T03:04:05Z",
+      "creationDate": "2026-08-01T03:04:05Z",
+      "deletedDate": null
+    },
+    {
+      "id": "26348302-c025-4d17-9784-a3406edca1d1",
+      "folderId": null,
+      "organizationId": null,
+      "collectionIds": null,
+      "name": "Test card",
+      "notes": null,
+      "type": 3,
+      "card": {
+        "cardholderName": "Alice Example",
+        "expMonth": "12",
+        "expYear": "2030",
+        "code": "123",
+        "brand": "Visa",
+        "number": "4111111111111111"
+      },
+      "favorite": false,
+      "reprompt": 1,
+      "fields": null,
+      "passwordHistory": null,
+      "revisionDate": "2026-08-11T03:04:05Z",
+      "creationDate": "2026-08-01T03:04:05Z",
+      "deletedDate": null
+    },
+    {
+      "id": "95fb9d96-8fbc-4e92-8356-c9977a162fd0",
+      "folderId": null,
+      "organizationId": null,
+      "collectionIds": null,
+      "name": "Test identity",
+      "notes": null,
+      "type": 4,
+      "identity": {
+        "title": "Dr",
+        "firstName": "Alice",
+        "middleName": null,
+        "lastName": "Example",
+        "address1": "1 Test Street",
+        "address2": null,
+        "address3": null,
+        "city": "Tokyo",
+        "state": "Tokyo",
+        "postalCode": "100-0001",
+        "country": "Japan",
+        "company": "Example Co",
+        "email": "alice@example.com",
+        "phone": null,
+        "ssn": null,
+        "username": "alice",
+        "passportNumber": null,
+        "licenseNumber": null
+      },
+      "favorite": false,
+      "reprompt": 0,
+      "fields": null,
+      "passwordHistory": null,
+      "revisionDate": "2026-08-11T03:04:05Z",
+      "creationDate": "2026-08-01T03:04:05Z",
+      "deletedDate": null
+    },
+    {
+      "id": "21437653-5822-4bc1-984c-5616fdb2af16",
+      "folderId": null,
+      "organizationId": null,
+      "collectionIds": null,
+      "name": "Synthetic SSH key",
+      "notes": "No production key material",
+      "type": 5,
+      "sshKey": {
+        "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----\nsynthetic-only\n-----END OPENSSH PRIVATE KEY-----",
+        "publicKey": "ssh-ed25519 c3ludGhldGlj synthetic@example.test",
+        "keyFingerprint": "SHA256:synthetic-fixture"
+      },
+      "favorite": false,
+      "reprompt": 1,
+      "fields": null,
+      "passwordHistory": null,
+      "revisionDate": "2026-08-11T03:04:05Z",
+      "creationDate": "2026-08-01T03:04:05Z",
+      "deletedDate": null
+    }
+  ]
+}

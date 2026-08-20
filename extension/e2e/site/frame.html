@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hasilan iframe autofill fixture</title>
+    <style>
+      :root { color-scheme: light; font: 14px/1.5 system-ui, sans-serif; }
+      body { margin: 0; padding: 16px; background: white; }
+      form, label { display: grid; gap: 8px; }
+      input, button { box-sizing: border-box; min-height: 38px; border: 1px solid #89958a; border-radius: 7px; padding: 7px 9px; font: inherit; }
+      button { color: white; background: #183923; font-weight: 700; }
+    </style>
+  </head>
+  <body>
+    <form>
+      <label>Frame username <input autocomplete="username" name="username" type="text" /></label>
+      <label>Frame password <input autocomplete="current-password" name="password" type="password" /></label>
+      <button type="submit">Frame sign in</button>
+    </form>
+    <script>
+      document.querySelector("form").addEventListener("submit", (event) => event.preventDefault());
+    </script>
+  </body>
+</html>

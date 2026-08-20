@@ -1,0 +1,16 @@
+<resources>
+    <string name="app_name">"Hasilan Pass"</string>
+    <string name="main_activity_title">"Hasilan Pass"</string>
+    <string name="autofill_service_label">"Hasilan Pass"</string>
+    <string name="autofill_unlock">"Unlock Hasilan Pass"</string>
+    <string name="open_app_to_unlock">"Open Hasilan Pass to unlock your vault"</string>
+    <string name="vault_account">"Hasilan Pass vault"</string>
+    <string name="passkey_create_title">"Save a passkey in Hasilan Pass"</string>
+    <string name="passkey_create_message">"Choose the matching login for this passkey."</string>
+    <string name="biometric_title">"Unlock Hasilan Pass"</string>
+    <string name="biometric_subtitle">"Verify your identity to use your encrypted vault."</string>
+    <string name="save_login_title">"Save login to Hasilan Pass?"</string>
+    <string name="save_login_message">"The login will be encrypted in your vault and synchronized when available."</string>
+    <string name="save">"Save"</string>
+    <string name="cancel">"Cancel"</string>
+</resources>

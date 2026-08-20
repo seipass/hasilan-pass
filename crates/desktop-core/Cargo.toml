@@ -1,0 +1,33 @@
+[package]
+name = "hasilan-desktop-core"
+description = "Native offline-first vault runtime for the Hasilan Pass desktop application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+base64.workspace = true
+chrono.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+hasilan-bitwarden-compat = { path = "../bitwarden-compat" }
+hasilan-client = { path = "../client" }
+hasilan-crypto = { path = "../crypto" }
+hasilan-protocol = { path = "../protocol" }
+hasilan-sync = { path = "../sync" }
+hasilan-vault = { path = "../vault" }
+keyring = "4.1.6"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile = "3.23.0"
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+url.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

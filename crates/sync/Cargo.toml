@@ -1,0 +1,18 @@
+[package]
+name = "hasilan-sync"
+description = "Offline synchronization state machine for Hasilan Pass clients"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+chrono.workspace = true
+hasilan-protocol = { path = "../protocol" }
+serde.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window",
+  "description": "The bundled Hasilan Pass UI may invoke registered Rust commands and receive lock events.",
+  "windows": ["main"],
+  "permissions": ["core:event:default"]
+}

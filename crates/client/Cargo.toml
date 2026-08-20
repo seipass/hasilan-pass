@@ -1,0 +1,19 @@
+[package]
+name = "hasilan-client"
+description = "HTTP API client shared by Hasilan Pass native clients"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+hasilan-protocol = { path = "../protocol" }
+reqwest.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

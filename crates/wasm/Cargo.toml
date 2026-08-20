@@ -1,0 +1,35 @@
+[package]
+name = "hasilan-wasm"
+description = "Shared WebAssembly vault runtime for Hasilan Pass web and extension clients"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+base64.workspace = true
+chrono.workspace = true
+hasilan-bitwarden-compat = { path = "../bitwarden-compat" }
+hasilan-crypto = { path = "../crypto" }
+hasilan-protocol = { path = "../protocol" }
+hasilan-vault = { path = "../vault" }
+serde.workspace = true
+serde_json.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+url.workspace = true
+uuid.workspace = true
+wasm-bindgen.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Argon2's password-hash feature graph still uses rand_core/getrandom 0.2. Enable
+# its browser entropy backend explicitly; application randomness uses getrandom 0.3.
+getrandom-v02 = { package = "getrandom", version = "0.2.17", features = ["js"] }
+
+[lints]
+workspace = true

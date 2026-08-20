@@ -1,0 +1,31 @@
+{
+  "name": "hasilan-pass",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.28.2",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "wasm": "./scripts/build-wasm.sh",
+    "dev:web": "pnpm wasm && pnpm --filter @hasilan/web-vault dev",
+    "build:web": "pnpm wasm && pnpm --filter @hasilan/web-vault build",
+    "build:extension": "pnpm wasm && pnpm --filter @hasilan/browser-extension build",
+    "build:desktop": "pnpm --filter @hasilan/desktop bundle",
+    "test:extension:e2e": "pnpm wasm && pnpm --filter @hasilan/browser-extension test:e2e",
+    "build:android": "pnpm --dir desktop tauri android build --debug --target aarch64 --apk --aab --ci",
+    "build:android:release": "pnpm --dir desktop tauri android build --target aarch64 --apk --aab --ci",
+    "check:android": "cargo check --package hasilan-desktop --target aarch64-linux-android && cd desktop/src-tauri/gen/android && ./gradlew :app:testUniversalDebugUnitTest :app:lintUniversalDebug :app:compileUniversalDebugAndroidTestKotlin",
+    "test:android": "cd desktop/src-tauri/gen/android && ./gradlew :app:testUniversalDebugUnitTest",
+    "lint:frontend": "./scripts/lint-frontend.sh",
+    "check:extension": "pnpm --filter @hasilan/browser-extension check",
+    "check:web": "pnpm wasm && pnpm --filter @hasilan/web-vault check",
+    "check:desktop": "pnpm --filter @hasilan/desktop check && cargo clippy -p hasilan-desktop-core -p hasilan-desktop --all-targets -- -D warnings",
+    "test:web": "pnpm wasm && pnpm --filter @hasilan/web-vault test",
+    "test:desktop": "pnpm --filter @hasilan/desktop test && cargo test -p hasilan-desktop-core -p hasilan-desktop",
+    "test:frontend": "pnpm --filter @hasilan/web-vault test && pnpm --filter @hasilan/browser-extension test && pnpm --filter @hasilan/desktop test",
+    "build:clients": "pnpm build:web && pnpm build:extension && pnpm --filter @hasilan/desktop build",
+    "verify:release-version": "node scripts/verify-release-version.mjs",
+    "scan:secrets": "./scripts/check-secrets.sh"
+  }
+}

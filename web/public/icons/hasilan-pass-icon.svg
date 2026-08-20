@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Hasilan Pass icon">
+  <path
+    d="M32 5.5 51 12.2v16.5c0 13.2-7.4 23.2-19 29.8-11.6-6.6-19-16.6-19-29.8V12.2L32 5.5Z"
+    fill="none"
+    stroke="#6c6ff6"
+    stroke-width="4"
+    stroke-linejoin="round"
+  />
+
+  <path
+    fill="#6c6ff6"
+    fill-rule="evenodd"
+    d="M20 17.5h7.5v11h9v-11H44v29h-7.5v-11h-9v11H20v-29Zm12 11.9c-1.55 0-2.8 1.25-2.8 2.8 0 1.05.58 1.97 1.45 2.46L29.9 36h4.2l-.75-1.34a2.8 2.8 0 0 0 1.45-2.46c0-1.55-1.25-2.8-2.8-2.8Z"
+  />
+</svg>

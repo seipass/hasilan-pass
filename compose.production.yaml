@@ -1,0 +1,17 @@
+services:
+  server:
+    environment:
+      HP_PUBLIC_URL: https://${HP_HOSTNAME:?Set HP_HOSTNAME to the public DNS name}
+      HP_ALLOWED_ORIGINS: https://${HP_HOSTNAME:?Set HP_HOSTNAME to the public DNS name}
+      HP_WEBAUTHN_ORIGIN: https://${HP_HOSTNAME:?Set HP_HOSTNAME to the public DNS name}
+      HP_WEBAUTHN_RP_ID: ${HP_HOSTNAME:?Set HP_HOSTNAME to the public DNS name}
+      HP_PRODUCTION: "true"
+
+  web:
+    environment:
+      HP_SITE_ADDRESS: ${HP_HOSTNAME:?Set HP_HOSTNAME to the public DNS name}
+    ports: !override
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+

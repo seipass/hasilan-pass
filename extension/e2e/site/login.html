@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hasilan autofill test site</title>
+    <style>
+      :root { color-scheme: light; font: 16px/1.5 system-ui, sans-serif; }
+      body { display: grid; min-height: 100vh; margin: 0; place-items: center; gap: 20px; padding: 30px; background: #f1f4ef; }
+      form { display: grid; width: min(360px, calc(100vw - 48px)); gap: 16px; padding: 32px; border: 1px solid #ced6cc; border-radius: 16px; background: white; box-shadow: 0 16px 50px #1a2c1a1c; }
+      label { display: grid; gap: 6px; font-weight: 650; }
+      input, button { box-sizing: border-box; width: 100%; min-height: 44px; border: 1px solid #9aa79a; border-radius: 8px; padding: 9px 12px; font: inherit; }
+      button { border-color: #183923; color: white; background: #183923; font-weight: 750; cursor: pointer; }
+      output { min-height: 24px; color: #315d39; }
+      section { display: grid; width: min(360px, calc(100vw - 48px)); gap: 10px; padding: 24px 32px; border: 1px solid #ced6cc; border-radius: 16px; background: white; }
+      section h2 { margin: 0; }
+    </style>
+  </head>
+  <body>
+    <form id="login-form">
+      <h1>Example sign in</h1>
+      <label>Username <input autocomplete="username" name="username" type="text" /></label>
+      <label>Password <input autocomplete="current-password" name="password" type="password" /></label>
+      <button type="submit">Sign in</button>
+      <output aria-live="polite"></output>
+    </form>
+    <section aria-label="Passkey test">
+      <h2>Passkey test RP</h2>
+      <button id="create-passkey" type="button">Create passkey</button>
+      <button id="get-passkey" disabled type="button">Use passkey</button>
+      <output id="passkey-status" aria-live="polite">Ready</output>
+    </section>
+    <script>
+      document.querySelector("form").addEventListener("submit", (event) => {
+        event.preventDefault();
+        document.querySelector("output").textContent = "Submitted locally";
+      });
+      let registered = null;
+      const encode = (bytes) => {
+        let binary = "";
+        for (const byte of new Uint8Array(bytes)) binary += String.fromCharCode(byte);
+        return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+      };
+      const status = document.querySelector("#passkey-status");
+      document.querySelector("#create-passkey").addEventListener("click", async () => {
+        status.textContent = "Creating…";
+        try {
+          const credential = await navigator.credentials.create({ publicKey: {
+            challenge: crypto.getRandomValues(new Uint8Array(32)),
+            rp: { id: location.hostname, name: "Hasilan E2E RP" },
+            user: {
+              id: new TextEncoder().encode("alice-passkey-user"),
+              name: "alice-passkey",
+              displayName: "Alice Passkey",
+            },
+            pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+            authenticatorSelection: { residentKey: "required", userVerification: "required" },
+            attestation: "none",
+            extensions: { credProps: true },
+          }});
+          registered = {
+            credential,
+            json: credential.toJSON(),
+            publicKey: encode(credential.response.getPublicKey()),
+          };
+          window.__hasilanPasskeyRegistration = registered;
+          document.querySelector("#get-passkey").disabled = false;
+          status.textContent = "Passkey created";
+        } catch (error) {
+          status.textContent = `${error.name}: ${error.message}`;
+        }
+      });
+      document.querySelector("#get-passkey").addEventListener("click", async () => {
+        status.textContent = "Authenticating…";
+        try {
+          const challenge = crypto.getRandomValues(new Uint8Array(32));
+          const credential = await navigator.credentials.get({ publicKey: {
+            challenge,
+            rpId: location.hostname,
+            allowCredentials: [{ type: "public-key", id: registered.credential.rawId, transports: ["internal"] }],
+            userVerification: "required",
+          }});
+          window.__hasilanPasskeyAssertion = { json: credential.toJSON(), challenge: encode(challenge) };
+          status.textContent = "Passkey asserted";
+        } catch (error) {
+          status.textContent = `${error.name}: ${error.message}`;
+        }
+      });
+    </script>
+  </body>
+</html>
