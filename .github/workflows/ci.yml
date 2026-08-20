@@ -179,7 +179,7 @@ jobs:
             # the emulated x86_64 ABI. Tauri produced its shared Rust cdylib in the preceding
             # step, so Gradle must not re-enter Tauri's one-shot build connection here.
             adb wait-for-device && ready=0 && for attempt in $(seq 1 90); do if adb shell cmd package list packages >/dev/null 2>&1 && adb shell cmd activity get-config >/dev/null 2>&1; then ready=1; break; fi; sleep 2; done && test "$ready" -eq 1
-            cd desktop/src-tauri/gen/android && ./gradlew :app:connectedUniversalDebugAndroidTest -PabiList=x86_64 -ParchList=x86_64 -PtargetList=x86_64 -x :app:rustBuildX86_64Debug --stacktrace
+            cd desktop/src-tauri/gen/android && if ./gradlew :app:connectedUniversalDebugAndroidTest -PabiList=x86_64 -ParchList=x86_64 -PtargetList=x86_64 -x :app:rustBuildX86_64Debug --stacktrace; then :; else echo 'Android instrumentation logcat:'; adb logcat -d -v threadtime -t 1000 || true; exit 1; fi
       - name: Build arm64 debug APK and AAB
         run: pnpm --dir desktop tauri android build --debug --target aarch64 --apk --aab --ci
       - name: Preserve Android smoke artifacts
