@@ -151,7 +151,6 @@ pub async fn connect_database(config: &Config) -> anyhow::Result<PgPool> {
 ///
 /// Returns an error if a configured CORS origin cannot be encoded as a header.
 pub fn build_router(config: Arc<Config>, pool: PgPool) -> anyhow::Result<Router> {
-    let production = config.production;
     let origins = config
         .allowed_origins
         .iter()
@@ -189,7 +188,7 @@ pub fn build_router(config: Arc<Config>, pool: PgPool) -> anyhow::Result<Router>
         webauthn: Arc::new(webauthn),
         invitation_delivery,
     };
-    let mut router = Router::new()
+    let router = Router::new()
         .route("/health/live", get(health_live))
         .route("/health/ready", get(health_ready))
         .route("/api/openapi.json", get(openapi))

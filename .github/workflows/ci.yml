@@ -153,6 +153,8 @@ jobs:
           } >> "$GITHUB_ENV"
       - name: Install locked desktop dependencies
         run: pnpm install --frozen-lockfile --filter @hasilan/desktop...
+      - name: Initialize the Tauri Android project
+        run: pnpm --dir desktop tauri android init
       - name: Check Android Rust, Kotlin, parser, and instrumentation-test compilation
         run: |
           cargo check --package hasilan-desktop --target aarch64-linux-android
