@@ -324,7 +324,16 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: pnpm --dir desktop tauri build --bundles "${{ matrix.bundles }}"
+        run: |
+          if [[ "$HP_NATIVE_SIGNING" == "verified" ]]; then
+            pnpm --dir desktop tauri build --bundles "${{ matrix.bundles }}"
+          else
+            # Tauri treats the presence of the notarization variables as a request
+            # to notarize, even when their values are empty. Ad-hoc smoke builds
+            # must remove them completely.
+            unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+            pnpm --dir desktop tauri build --bundles "${{ matrix.bundles }}"
+          fi
       - name: Build Windows desktop bundles
         if: matrix.platform == 'windows'
         shell: pwsh
