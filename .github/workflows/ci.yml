@@ -153,17 +153,15 @@ jobs:
           } >> "$GITHUB_ENV"
       - name: Install locked desktop dependencies
         run: pnpm install --frozen-lockfile --filter @hasilan/desktop...
-      - name: Initialize the Tauri Android project
-        run: pnpm --dir desktop tauri android init
+      - name: Build x86_64 test APK with Tauri
+        # Tauri owns the Rust/JNI build connection. Produce the emulator ABI before Gradle runs
+        # the device test, then avoid asking Gradle to recreate that transient Tauri connection.
+        run: pnpm --dir desktop tauri android build --debug --target x86_64 --apk --ci
       - name: Check Android Rust, Kotlin, parser, and instrumentation-test compilation
         run: |
           cargo check --package hasilan-desktop --target aarch64-linux-android
           cd desktop/src-tauri/gen/android
           ./gradlew :app:testUniversalDebugUnitTest :app:lintUniversalDebug :app:compileUniversalDebugAndroidTestKotlin
-      - name: Build x86_64 test APK with Tauri
-        # Tauri owns the Rust/JNI build connection. Produce the emulator ABI before Gradle runs
-        # the device test, then avoid asking Gradle to recreate that transient Tauri connection.
-        run: pnpm --dir desktop tauri android build --debug --target x86_64 --apk --ci
       - name: Run Android device security smoke test
         # The AOSP image deliberately avoids Play Services: the app's basic vault flow must not
         # depend on Google services. Pin the action commit for reproducible CI execution.
