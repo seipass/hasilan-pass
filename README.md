@@ -205,7 +205,8 @@ isolated test database. Playwright journeys cover Web Vault and the installed ex
 Cross-platform candidate construction, native signing requirements, SPDX SBOMs,
 Sigstore/GitHub provenance, checksum verification, and the manual platform checklist are
 documented in [release engineering](docs/releasing.md). Tagged workflows only create a
-draft release and fail closed when Windows or macOS signing material is missing.
+draft release and fail closed when Windows signing material is missing; macOS is not
+scheduled by GitHub Actions.
 
 ## Compatibility and security boundaries
 

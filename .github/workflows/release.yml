@@ -152,10 +152,6 @@ jobs:
             runner: ubuntu-24.04
             bundles: deb,rpm,appimage
             initial-signing: not-applicable
-          - platform: macos
-            runner: macos-15
-            bundles: app,dmg
-            initial-signing: unsigned-smoke
           - platform: windows
             runner: windows-2025
             bundles: nsis,msi
@@ -192,64 +188,6 @@ jobs:
           pnpm --dir desktop check
           pnpm --dir desktop test
           cargo test --locked --package hasilan-desktop-core --package hasilan-desktop --all-features
-      - name: Configure macOS identity signing and notarization
-        if: matrix.platform == 'macos'
-        shell: bash
-        env:
-          HP_TAG_RELEASE: ${{ needs.prepare.outputs.tag_release }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY_SECRET: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID_SECRET: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD_SECRET: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID_SECRET: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          credentials=("$APPLE_CERTIFICATE" "$APPLE_CERTIFICATE_PASSWORD" "$APPLE_SIGNING_IDENTITY_SECRET" "$APPLE_ID_SECRET" "$APPLE_PASSWORD_SECRET" "$APPLE_TEAM_ID_SECRET")
-          present=0
-          for credential in "${credentials[@]}"; do
-            if [[ -n "$credential" ]]; then
-              present=$((present + 1))
-            fi
-          done
-          if [[ "$present" -ne 0 && "$present" -ne ${#credentials[@]} ]]; then
-            echo 'macOS signing credentials are only partially configured' >&2
-            exit 1
-          fi
-          if [[ "$HP_TAG_RELEASE" == "true" && "$present" -ne ${#credentials[@]} ]]; then
-            echo 'a tagged release requires macOS identity signing and notarization credentials' >&2
-            exit 1
-          fi
-          if [[ "$present" -eq 0 ]]; then
-            printf 'APPLE_SIGNING_IDENTITY=-\n' >> "$GITHUB_ENV"
-            exit 0
-          fi
-          keychain="$RUNNER_TEMP/hasilan-release.keychain"
-          certificate="$RUNNER_TEMP/hasilan-release.p12"
-          cleanup_setup() {
-            setup_status=$?
-            rm -f "$certificate"
-            if [[ "$setup_status" -ne 0 ]]; then
-              security delete-keychain "$keychain" >/dev/null 2>&1 || true
-            fi
-            exit "$setup_status"
-          }
-          trap cleanup_setup EXIT
-          keychain_password=$(openssl rand -hex 32)
-          echo "::add-mask::$keychain_password"
-          printf '%s' "$APPLE_CERTIFICATE" | openssl base64 -d -A -out "$certificate"
-          security create-keychain -p "$keychain_password" "$keychain"
-          security default-keychain -s "$keychain"
-          security unlock-keychain -p "$keychain_password" "$keychain"
-          security set-keychain-settings -t 14400 -u "$keychain"
-          security import "$certificate" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
-          security find-identity -v -p codesigning "$keychain" | grep -F -- "$APPLE_SIGNING_IDENTITY_SECRET"
-          rm -f "$certificate"
-          {
-            printf 'APPLE_SIGNING_IDENTITY=%s\n' "$APPLE_SIGNING_IDENTITY_SECRET"
-            printf 'HP_MACOS_KEYCHAIN=%s\n' "$keychain"
-            printf 'HP_NATIVE_SIGNING=verified\n'
-          } >> "$GITHUB_ENV"
       - name: Configure Windows Authenticode signing
         if: matrix.platform == 'windows'
         shell: pwsh
@@ -317,23 +255,6 @@ jobs:
         if: matrix.platform == 'linux'
         shell: bash
         run: pnpm --dir desktop tauri build --bundles "${{ matrix.bundles }}"
-      - name: Build signed or ad-hoc macOS desktop bundles
-        if: matrix.platform == 'macos'
-        shell: bash
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          if [[ "$HP_NATIVE_SIGNING" == "verified" ]]; then
-            pnpm --dir desktop tauri build --bundles "${{ matrix.bundles }}"
-          else
-            # Tauri treats the presence of the notarization variables as a request
-            # to notarize, even when their values are empty. Ad-hoc smoke builds
-            # must remove them completely.
-            unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
-            pnpm --dir desktop tauri build --bundles "${{ matrix.bundles }}"
-          fi
       - name: Build Windows desktop bundles
         if: matrix.platform == 'windows'
         shell: pwsh
@@ -386,23 +307,6 @@ jobs:
               throw "$($package.FullName) does not contain an Authenticode timestamp"
             }
           }
-      - name: Verify macOS package signature and notarization staple
-        if: matrix.platform == 'macos'
-        shell: bash
-        run: |
-          if [[ "$HP_NATIVE_SIGNING" != "verified" ]]; then
-            exit 0
-          fi
-          application_count=$(find target/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print | wc -l | tr -d ' ')
-          disk_count=$(find target/release/bundle/dmg -maxdepth 1 -type f -name '*.dmg' -print | wc -l | tr -d ' ')
-          if [[ "$application_count" -ne 1 || "$disk_count" -ne 1 ]]; then
-            echo 'expected exactly one macOS app and one DMG' >&2
-            exit 1
-          fi
-          application=$(find target/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)
-          disk=$(find target/release/bundle/dmg -maxdepth 1 -type f -name '*.dmg' -print -quit)
-          codesign --verify --deep --strict --verbose=2 "$application"
-          xcrun stapler validate "$disk"
       - name: Collect required platform packages
         env:
           HP_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
@@ -443,16 +347,13 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Remove ephemeral signing identities
-        if: always()
+        if: always() && matrix.platform == 'windows'
         shell: pwsh
         run: |
           if ('${{ matrix.platform }}' -eq 'windows' -and -not [string]::IsNullOrWhiteSpace($env:HP_WINDOWS_THUMBPRINTS)) {
             foreach ($thumbprint in $env:HP_WINDOWS_THUMBPRINTS.Split(';')) {
               Remove-Item -LiteralPath "Cert:\CurrentUser\My\$thumbprint" -Force -ErrorAction SilentlyContinue
             }
-          }
-          if ('${{ matrix.platform }}' -eq 'macos' -and -not [string]::IsNullOrWhiteSpace($env:HP_MACOS_KEYCHAIN)) {
-            & security delete-keychain $env:HP_MACOS_KEYCHAIN
           }
 
   android:
@@ -599,7 +500,6 @@ jobs:
           test -f "release/packages/hasilan-pass-${HP_RELEASE_VERSION}-android-arm64-v8a.apk"
           test -f "release/packages/hasilan-pass-${HP_RELEASE_VERSION}-android-arm64-v8a.aab"
           test -f release/metadata/desktop-linux.json
-          test -f release/metadata/desktop-macos.json
           test -f release/metadata/desktop-windows.json
           test -f release/metadata/android.json
       - name: Generate the release SPDX SBOM
