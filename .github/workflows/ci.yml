@@ -173,11 +173,10 @@ jobs:
           emulator-options: -no-window -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: |
-            cd desktop/src-tauri/gen/android
             # The universal flavor normally compiles every ABI. Restrict this device gate to
             # the emulated x86_64 ABI. Tauri produced its shared Rust cdylib in the preceding
             # step, so Gradle must not re-enter Tauri's one-shot build connection here.
-            ./gradlew :app:connectedUniversalDebugAndroidTest \
+            cd desktop/src-tauri/gen/android && ./gradlew :app:connectedUniversalDebugAndroidTest \
               -PabiList=x86_64 -ParchList=x86_64 -PtargetList=x86_64 \
               -x :app:rustBuildX86_64Debug --stacktrace
       - name: Build arm64 debug APK and AAB
