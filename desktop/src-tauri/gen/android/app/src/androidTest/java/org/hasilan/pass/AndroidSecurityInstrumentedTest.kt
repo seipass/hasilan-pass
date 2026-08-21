@@ -39,13 +39,16 @@ class AndroidSecurityInstrumentedTest {
 
   @Test
   fun launchAppliesSecureWindowAndLifecyclePolicy() {
-    ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-      scenario.onActivity { activity ->
-        assertTrue(
-          activity.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE != 0,
-        )
-        assertTrue(activity.handleBackNavigation)
-      }
+    // Do not close the scenario explicitly: Tauri's Android event loop calls
+    // process.exit() during Activity destruction, which races the emulator EGL
+    // teardown and aborts the instrumentation process. The runner cleans up the
+    // target package after the test process exits.
+    val scenario = ActivityScenario.launch(MainActivity::class.java)
+    scenario.onActivity { activity ->
+      assertTrue(
+        activity.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE != 0,
+      )
+      assertTrue(activity.handleBackNavigation)
     }
     assertTrue(VaultLifecyclePolicy.locksOnStop())
   }
