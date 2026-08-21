@@ -621,7 +621,14 @@ export function App({ runtime }: AppProps) {
 
   async function changeRememberUnlock(enabled: boolean): Promise<void> {
     const session = api.session;
-    if (session === null || accountEmail === null) return;
+    // Registration enters the vault immediately after persisting the session. React may not
+    // have committed `accountEmail` yet when the first sidebar interaction arrives, so use the
+    // durable record as the source of truth during that short transition as well.
+    const storedSession = accountEmail === null
+      ? await deviceUnlocks.loadSession().catch(() => null)
+      : null;
+    const email = accountEmail ?? storedSession?.email ?? null;
+    if (session === null || email === null) return;
     if (enabled && !runtime.isUnlocked) {
       setAuthError("Unlock the vault before enabling remembered unlock.");
       return;
@@ -642,7 +649,7 @@ export function App({ runtime }: AppProps) {
       await deviceUnlocks.removeUnlock(session.accountId, session.deviceId);
     }
     setRememberUnlock(enabled);
-    await persistSessionRecord(accountEmail, enabled, false);
+    await persistSessionRecord(email, enabled, false);
     setNotice(enabled ? "This device will remember the encrypted vault unlock." : "Remembered unlock removed from this device.");
   }
 
