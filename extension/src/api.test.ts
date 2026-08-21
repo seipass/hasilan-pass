@@ -75,6 +75,23 @@ describe("ExtensionApi", () => {
     expect(new Headers(fetchMock.mock.calls[3]?.[1]?.headers).get("Authorization")).toBe("Bearer rotated-access-token");
     expect(new Headers(fetchMock.mock.calls[3]?.[1]?.headers).get("Content-Type")).toBe("application/octet-stream");
   });
+
+  it("keeps the in-memory session when refresh cannot reach the server", async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(firstSession))
+      .mockResolvedValueOnce(jsonResponse({ code: "unauthorized" }, 401))
+      .mockRejectedValueOnce(new TypeError("offline"));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ExtensionApi();
+    const lost = vi.fn();
+    client.configure("https://vault.example.test");
+    client.setSessionLostHandler(lost);
+    await client.login('{"opaque":"login"}');
+
+    await expect(client.sync(null)).rejects.toThrow("offline");
+    expect(client.session).not.toBeNull();
+    expect(lost).not.toHaveBeenCalled();
+  });
 });
 
 describe("normalizeServerUrl", () => {

@@ -29,8 +29,11 @@ does not silently weaken biometric requirements or derive a replacement vault ke
 The main activity clears the Rust coordinator in `onStop`; system Autofill and Credential Manager
 activities each require a separate biometric unlock. On foregrounding, the webview asks the native
 coordinator for status before showing the prior vault view, clearing stale list/detail state if it
-was locked. The user can set the in-app inactivity timeout (1 minute through 4 hours); background
-locking is deliberately immediate.
+was locked. With Remember unlock enabled, it restores the OS-wrapped key and keeps the server
+session; with it disabled, the normal password unlock screen is shown. The user can set the
+in-app inactivity timeout (1 minute through 4 hours, or Never); background locking is deliberately
+immediate. Locking clears decrypted Rust state but does not revoke the authenticated server
+session. Logout/revocation removes refresh/device envelopes and ends the session.
 
 `FLAG_SECURE` is set on the main, Autofill, Credential Manager, save, and QR activities. Android
 backup and device-transfer rules exclude app data. The manifest uses no cleartext traffic in
@@ -49,8 +52,11 @@ outside the vault cache and is subject to that storage provider's retention poli
 
 Biometric unlock is explicit and opt-in. It is available only to a Class 3 /
 `BIOMETRIC_STRONG` enrollment. Every Autofill fill/save and Credential Manager password or
-passkey operation prompts again; system-service processes never keep a persistent user key,
-access token, or second network session.
+passkey operation prompts again. The versioned biometric envelope authenticates a non-secret
+context containing the active profile, device, and protected-user-key/KDF version as AES-GCM AAD;
+switching accounts or rotating the server key therefore fails closed instead of decrypting a
+different profile. System-service processes never keep a persistent user key, access token, or
+second network session.
 
 If the Keystore, biometric prompt, package-signature check, Digital Asset Links check, or native
 cache opening fails, the operation fails closed. A cancelled prompt does not return a partial
@@ -72,7 +78,8 @@ are not uploaded. QR decoding has no Google Play Services or Firebase dependency
 ## Incident and recovery behavior
 
 - On logout, the shared client revokes the current device session when online, drops plaintext,
-  and keeps only encrypted offline data needed for normal account recovery.
+  removes remembered-unlock material, and keeps only encrypted offline data needed for normal
+  account recovery.
 - A revoked session, changed password, or unavailable self-hosted server must be resolved through
   the normal account flow; no Android-only recovery secret is created.
 - Users should remove the app's Autofill/Credential Manager service in Android Settings before

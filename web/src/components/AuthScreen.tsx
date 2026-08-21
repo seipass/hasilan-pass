@@ -1,22 +1,41 @@
-import { useState, type FormEvent, type MouseEvent } from "react";
+import { useEffect, useState, type FormEvent, type MouseEvent } from "react";
 
 import { messageFromError } from "../security";
 
 interface AuthScreenProps {
   busy: boolean;
   error: string | null;
-  onLogin: (email: string, password: string, secondFactor: string | null, rememberDevice: boolean) => Promise<void>;
-  onPasskeyLogin: (email: string, password: string, rememberDevice: boolean) => Promise<void>;
+  locked?: boolean;
+  initialEmail?: string | null;
+  onLogin: (email: string, password: string, secondFactor: string | null, rememberDevice: boolean, rememberUnlock: boolean) => Promise<void>;
+  onUnlock?: (email: string, password: string, rememberUnlock: boolean) => Promise<void>;
+  onLogout?: () => void;
+  onPasskeyLogin: (email: string, password: string, rememberDevice: boolean, rememberUnlock: boolean) => Promise<void>;
   onRegister: (email: string, password: string) => Promise<void>;
-  onWebauthnMfaLogin: (email: string, password: string, rememberDevice: boolean) => Promise<void>;
+  onWebauthnMfaLogin: (email: string, password: string, rememberDevice: boolean, rememberUnlock: boolean) => Promise<void>;
 }
 
 type AuthMode = "login" | "register";
 
-export function AuthScreen({ busy, error, onLogin, onPasskeyLogin, onRegister, onWebauthnMfaLogin }: AuthScreenProps) {
+export function AuthScreen({
+  busy,
+  error,
+  locked = false,
+  initialEmail = null,
+  onLogin,
+  onUnlock,
+  onLogout,
+  onPasskeyLogin,
+  onRegister,
+  onWebauthnMfaLogin,
+}: AuthScreenProps) {
   const [mode, setMode] = useState<AuthMode>("login");
   const [validationError, setValidationError] = useState<string | null>(null);
   const displayedError = validationError ?? error;
+
+  useEffect(() => {
+    if (locked) setMode("login");
+  }, [locked]);
 
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -33,8 +52,16 @@ export function AuthScreen({ busy, error, onLogin, onPasskeyLogin, onRegister, o
         password = "";
         await operation;
       } else {
-        const factor = text(data, "factor").trim();
-        const operation = onLogin(email, password, factor === "" ? null : factor, data.get("rememberDevice") === "on");
+        const rememberUnlock = data.get("rememberUnlock") === "on";
+        const operation = locked && onUnlock !== undefined
+          ? onUnlock(email, password, rememberUnlock)
+          : onLogin(
+              email,
+              password,
+              text(data, "factor").trim() === "" ? null : text(data, "factor").trim(),
+              data.get("rememberDevice") === "on",
+              rememberUnlock,
+            );
         password = "";
         await operation;
       }
@@ -60,9 +87,10 @@ export function AuthScreen({ busy, error, onLogin, onPasskeyLogin, onRegister, o
     setValidationError(null);
     try {
       const remember = data.get("rememberDevice") === "on";
+      const rememberUnlock = data.get("rememberUnlock") === "on";
       const operation = kind === "passkey"
-        ? onPasskeyLogin(email, password, remember)
-        : onWebauthnMfaLogin(email, password, remember);
+        ? onPasskeyLogin(email, password, remember, rememberUnlock)
+        : onWebauthnMfaLogin(email, password, remember, rememberUnlock);
       password = "";
       await operation;
     } catch (caught) {
@@ -95,6 +123,7 @@ export function AuthScreen({ busy, error, onLogin, onPasskeyLogin, onRegister, o
         <div className="auth-card">
           <div className="auth-tabs" role="tablist" aria-label="Account action">
             <button
+              hidden={locked}
               aria-selected={mode === "login"}
               className={mode === "login" ? "active" : ""}
               onClick={() => { setMode("login"); setValidationError(null); }}
@@ -127,7 +156,7 @@ export function AuthScreen({ busy, error, onLogin, onPasskeyLogin, onRegister, o
           <form onSubmit={(event) => void submit(event)}>
             <label>
               Email address
-              <input autoComplete="username" name="email" required type="email" />
+              <input autoComplete="username" defaultValue={initialEmail ?? ""} name="email" required type="email" />
             </label>
             <label>
               Master password
@@ -144,23 +173,32 @@ export function AuthScreen({ busy, error, onLogin, onPasskeyLogin, onRegister, o
                 Confirm master password
                 <input autoComplete="new-password" minLength={12} name="confirmation" required type="password" />
               </label>
-            ) : (
+            ) : locked ? null : (
               <label>
                 Authenticator or recovery code <span className="label-note">if enabled</span>
                 <input autoComplete="one-time-code" name="factor" />
               </label>
             )}
-            {mode === "login" ? (
+            {mode === "login" && !locked ? (
               <label className="checkbox-row">
                 <input name="rememberDevice" type="checkbox" />
                 Trust this browser for 30 days after full verification
+              </label>
+            ) : null}
+            {mode === "login" ? (
+              <label className="checkbox-row">
+                <input name="rememberUnlock" type="checkbox" />
+                <span>
+                  Remember unlock on this device (encrypted, optional)
+                  <small className="remember-warning">Anyone who can use this device may unlock the vault; memory-only mode is stronger.</small>
+                </span>
               </label>
             ) : null}
             {displayedError === null ? null : <p className="form-error" role="alert">{displayedError}</p>}
             <button className="primary-button full-button" disabled={busy} type="submit">
               {busy ? "Deriving keys…" : mode === "login" ? "Unlock vault" : "Create encrypted vault"}
             </button>
-            {mode === "login" ? (
+            {mode === "login" && !locked ? (
               <div className="auth-alternatives">
                 <button disabled={busy} onClick={(event) => void submitWebauthn(event, "passkey")} type="button">
                   Sign in with passkey
@@ -173,8 +211,11 @@ export function AuthScreen({ busy, error, onLogin, onPasskeyLogin, onRegister, o
           </form>
 
           <p className="auth-footnote">
-            Master-password derivation runs inside the shared Rust WebAssembly core. Passkey sign-in authenticates the account; the master password remains local and unlocks its encrypted key.
+            {locked
+              ? `The session for ${initialEmail ?? "this account"} is still active. Unlocking clears the device lock without signing out.`
+              : "Master-password derivation runs inside the shared Rust WebAssembly core. Passkey sign-in authenticates the account; the master password remains local and unlocks its encrypted key."}
           </p>
+          {locked && onLogout !== undefined ? <button className="danger-button full-button" onClick={onLogout} type="button">Log out and revoke session</button> : null}
         </div>
       </section>
     </main>

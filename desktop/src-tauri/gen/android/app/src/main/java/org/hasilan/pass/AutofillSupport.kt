@@ -18,6 +18,7 @@ internal object AutofillNative {
   }
 
   @JvmStatic external fun unlock(key: ByteArray): Boolean
+  @JvmStatic external fun unlockContext(): String?
   @JvmStatic external fun initialize(dataDir: String): Boolean
   @JvmStatic external fun candidates(origin: String): String?
   @JvmStatic external fun credentialPasswordCandidates(): String?

@@ -78,8 +78,44 @@ mod desktop {
     }
 
     #[tauri::command]
+    async fn unlock_with_password(
+        state: State<'_, DesktopState>,
+        master_password: String,
+    ) -> CommandResult<DesktopStatus> {
+        state
+            .client
+            .lock()
+            .await
+            .unlock_with_password(master_password)
+            .map_err(redacted_error)
+    }
+
+    #[tauri::command]
     async fn lock(state: State<'_, DesktopState>) -> CommandResult<DesktopStatus> {
         Ok(state.client.lock().await.lock())
+    }
+
+    #[tauri::command]
+    async fn unlock_with_device_key(
+        state: State<'_, DesktopState>,
+    ) -> CommandResult<DesktopStatus> {
+        state
+            .client
+            .lock()
+            .await
+            .unlock_with_device_key()
+            .map_err(redacted_error)
+    }
+
+    #[tauri::command]
+    async fn resume_session(state: State<'_, DesktopState>) -> CommandResult<DesktopStatus> {
+        state
+            .client
+            .lock()
+            .await
+            .resume_session()
+            .await
+            .map_err(redacted_error)
     }
 
     #[tauri::command]
@@ -444,6 +480,19 @@ mod desktop {
     }
 
     #[tauri::command]
+    async fn set_remember_unlock(
+        state: State<'_, DesktopState>,
+        enabled: bool,
+    ) -> CommandResult<DesktopStatus> {
+        state
+            .client
+            .lock()
+            .await
+            .set_remember_unlock(enabled)
+            .map_err(redacted_error)
+    }
+
+    #[tauri::command]
     async fn copy_secret(mut value: String) -> CommandResult<()> {
         if value.len() > 1_000_000 {
             value.zeroize();
@@ -579,7 +628,10 @@ mod desktop {
                 status,
                 register,
                 login,
+                unlock_with_password,
                 lock,
+                unlock_with_device_key,
+                resume_session,
                 logout,
                 sync_now,
                 touch,
@@ -604,6 +656,7 @@ mod desktop {
                 resolve_conflict,
                 select_profile,
                 set_auto_lock_minutes,
+                set_remember_unlock,
                 copy_secret,
             ]);
 

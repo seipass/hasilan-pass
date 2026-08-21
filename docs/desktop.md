@@ -38,16 +38,19 @@ same-directory temporary file, `fsync`, and an overwrite rename so a process int
 cannot leave a partially written cache. Cache/version/profile/item/byte limits are
 validated before parsing or decrypting.
 
-The rotating refresh token and a random device secret are stored under per-account keys
+The rotating refresh token and a random device wrapping secret are stored under per-account keys
 in the native credential service through the Rust `keyring` backend:
 
 - macOS: Keychain;
 - Windows: Credential Manager;
 - Linux: Secret Service-compatible keyring.
 
-Biometric unlock is intentionally not implied by possession of that device secret. A
-future biometric wrapper can use it, but current offline unlock always authenticates the
-password-protected user key with the master password.
+The Security setting **Remember unlock on this device** is opt-in. It stores an authenticated,
+versioned XChaCha20-Poly1305 envelope of the 64-byte user key under that device secret. The
+envelope is bound to the cached profile scope and is deleted on logout or current-session revoke.
+Manual lock keeps the server session alive but suppresses envelope restore until the master
+password unlocks the profile. Access tokens are memory-only; `resume_session` rotates the OS
+refresh credential when the application starts.
 
 ## Online and offline behavior
 
@@ -67,7 +70,8 @@ server” decision; there is no silent last-write-wins path.
 
 - The window closes to a tray icon with Open, Lock, and Quit actions.
 - A single-instance plugin raises the existing window on a second launch.
-- A native idle monitor clears unlocked state and emits a lock event to the webview.
+- A native idle monitor clears unlocked state and emits a lock event to the webview while retaining
+  the authenticated session; explicit logout/revoke is the only session-ending path.
 - Clipboard writes happen in Rust and are cleared after 30 seconds only if the content
   is unchanged, avoiding deletion of a value the user copied afterward.
 - Native file dialogs handle Bitwarden JSON. Import is bounded to 64 MiB. Export requires

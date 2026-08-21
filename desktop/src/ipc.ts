@@ -16,6 +16,7 @@ export interface DesktopStatus {
   pendingCount: number;
   conflictCount: number;
   autoLockMinutes: number;
+  rememberUnlock: boolean;
   lastSyncAt: string | null;
   profiles: ProfileSummary[];
 }
@@ -269,6 +270,8 @@ export const desktop = {
     totpCode: string | null,
     recoveryCode: string | null,
   ) => invoke<DesktopStatus>("login", { serverUrl, email, masterPassword, totpCode, recoveryCode }),
+  unlockWithPassword: (masterPassword: string) =>
+    invoke<DesktopStatus>("unlock_with_password", { masterPassword }),
   loginWithAccountPasskey: (serverUrl: string, email: string, masterPassword: string) =>
     invoke<DesktopStatus>("login_with_account_passkey", { serverUrl, email, masterPassword }),
   lock: () => invoke<DesktopStatus>("lock"),
@@ -306,6 +309,10 @@ export const desktop = {
   selectProfile: (scope: string) => invoke<DesktopStatus>("select_profile", { scope }),
   setAutoLock: (minutes: number) =>
     invoke<DesktopStatus>("set_auto_lock_minutes", { minutes }),
+  setRememberUnlock: (enabled: boolean) =>
+    invoke<DesktopStatus>("set_remember_unlock", { enabled }),
+  unlockWithDeviceKey: () => invoke<DesktopStatus>("unlock_with_device_key"),
+  resumeSession: () => invoke<DesktopStatus>("resume_session"),
   copySecret: (value: string) => invoke<void>("copy_secret", { value }),
   clipboardPolicy: () => invoke<ClipboardPolicy>("clipboard_policy"),
   setClipboardPolicy: (clearAfterSeconds: number) =>

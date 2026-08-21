@@ -80,6 +80,7 @@ class ClipboardPolicyArgs {
 @InvokeArg
 class BiometricKeyArgs {
   lateinit var key: String
+  lateinit var context: String
 }
 
 @InvokeArg
@@ -129,6 +130,8 @@ internal object AndroidKeystore {
   private const val BIOMETRIC_KEY_ALIAS = "hasilan.pass.biometric.v1"
   private const val GCM_IV_BYTES = 12
   private const val GCM_TAG_BITS = 128
+  private const val BIOMETRIC_ENVELOPE_VERSION = 2
+  private const val MAX_BIOMETRIC_CONTEXT_BYTES = 1024
 
   private fun key(alias: String, requireAuth: Boolean): SecretKey {
     val store = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
@@ -258,14 +261,51 @@ internal object AndroidKeystore {
     return cipher
   }
 
-  fun biometricDecryptCipher(value: String): Cipher? {
-    val (iv, _) = unpack(value) ?: return null
+  private data class BiometricEnvelope(
+    val context: ByteArray,
+    val iv: ByteArray,
+    val ciphertext: ByteArray,
+  )
+
+  private fun unpackBiometric(value: String): BiometricEnvelope? {
+    val bytes = try {
+      Base64.decode(value, Base64.NO_WRAP)
+    } catch (_: IllegalArgumentException) {
+      return null
+    }
+    if (bytes.size < 1 + 2 + 1 + GCM_IV_BYTES + 16 ||
+      (bytes[0].toInt() and 0xff) != BIOMETRIC_ENVELOPE_VERSION
+    ) return null
+    val contextLength = ((bytes[1].toInt() and 0xff) shl 8) or (bytes[2].toInt() and 0xff)
+    val contextStart = 3
+    val ivLengthOffset = contextStart + contextLength
+    if (contextLength == 0 || contextLength > MAX_BIOMETRIC_CONTEXT_BYTES ||
+      ivLengthOffset >= bytes.size
+    ) return null
+    val ivLength = bytes[ivLengthOffset].toInt() and 0xff
+    val ivStart = ivLengthOffset + 1
+    val ciphertextStart = ivStart + ivLength
+    if (ivLength != GCM_IV_BYTES || ciphertextStart + 16 > bytes.size) return null
+    return BiometricEnvelope(
+      context = bytes.copyOfRange(contextStart, ivLengthOffset),
+      iv = bytes.copyOfRange(ivStart, ciphertextStart),
+      ciphertext = bytes.copyOfRange(ciphertextStart, bytes.size),
+    )
+  }
+
+  private fun biometricContextBytes(context: String): ByteArray? = context.toByteArray(Charsets.UTF_8)
+    .takeIf { it.isNotEmpty() && it.size <= MAX_BIOMETRIC_CONTEXT_BYTES }
+
+  fun biometricDecryptCipher(value: String, expectedContext: String): Cipher? {
+    val envelope = unpackBiometric(value) ?: return null
+    val context = biometricContextBytes(expectedContext) ?: return null
+    if (!envelope.context.contentEquals(context)) return null
     return try {
       Cipher.getInstance("AES/GCM/NoPadding").apply {
         init(
           Cipher.DECRYPT_MODE,
           key(BIOMETRIC_KEY_ALIAS, true),
-          GCMParameterSpec(GCM_TAG_BITS, iv),
+          GCMParameterSpec(GCM_TAG_BITS, envelope.iv),
         )
       }
     } catch (_: Exception) {
@@ -273,12 +313,32 @@ internal object AndroidKeystore {
     }
   }
 
-  fun biometricPack(cipher: Cipher, plaintext: ByteArray): String = pack(cipher.iv, cipher.doFinal(plaintext))
+  private fun biometricPack(context: ByteArray, iv: ByteArray, ciphertext: ByteArray): String {
+    val bytes = ByteArray(1 + 2 + context.size + 1 + iv.size + ciphertext.size)
+    bytes[0] = BIOMETRIC_ENVELOPE_VERSION.toByte()
+    bytes[1] = (context.size ushr 8).toByte()
+    bytes[2] = context.size.toByte()
+    context.copyInto(bytes, 3)
+    val ivLengthOffset = 3 + context.size
+    bytes[ivLengthOffset] = iv.size.toByte()
+    iv.copyInto(bytes, ivLengthOffset + 1)
+    ciphertext.copyInto(bytes, ivLengthOffset + 1 + iv.size)
+    return Base64.encodeToString(bytes, Base64.NO_WRAP)
+  }
 
-  fun biometricDecrypt(cipher: Cipher, value: String): ByteArray? {
-    val (_, ciphertext) = unpack(value) ?: return null
+  fun biometricPack(cipher: Cipher, plaintext: ByteArray, context: String): String {
+    val contextBytes = biometricContextBytes(context) ?: throw IllegalArgumentException("Invalid biometric context")
+    cipher.updateAAD(contextBytes)
+    return biometricPack(contextBytes, cipher.iv, cipher.doFinal(plaintext))
+  }
+
+  fun biometricDecrypt(cipher: Cipher, value: String, expectedContext: String): ByteArray? {
+    val envelope = unpackBiometric(value) ?: return null
+    val context = biometricContextBytes(expectedContext) ?: return null
+    if (!envelope.context.contentEquals(context)) return null
     return try {
-      cipher.doFinal(ciphertext)
+      cipher.updateAAD(context)
+      cipher.doFinal(envelope.ciphertext)
     } catch (_: Exception) {
       null
     }
@@ -339,8 +399,14 @@ internal object BiometricVault {
     )
   }
 
-  fun wrap(activity: Activity, userKey: ByteArray, onSuccess: () -> Unit, onError: () -> Unit) {
-    if (!isAvailable(activity)) {
+  fun wrap(
+    activity: Activity,
+    userKey: ByteArray,
+    context: String,
+    onSuccess: () -> Unit,
+    onError: () -> Unit,
+  ) {
+    if (!isAvailable(activity) || context.isBlank()) {
       onError()
       return
     }
@@ -352,29 +418,34 @@ internal object BiometricVault {
     }
     prompt(activity, BiometricPrompt.CryptoObject(cipher), { authenticatedCipher ->
       try {
-        val encoded = AndroidKeystore.biometricPack(authenticatedCipher, userKey)
-        preferences(activity).edit().putString(BIOMETRIC_ENVELOPE, encoded).commit()
-        onSuccess()
+        val encoded = AndroidKeystore.biometricPack(authenticatedCipher, userKey, context)
+        if (preferences(activity).edit().putString(BIOMETRIC_ENVELOPE, encoded).commit()) onSuccess()
+        else onError()
       } catch (_: Exception) {
         onError()
       }
     }, onError)
   }
 
-  fun unwrap(activity: Activity, onSuccess: (ByteArray) -> Unit, onError: () -> Unit) {
+  fun unwrap(
+    activity: Activity,
+    expectedContext: String,
+    onSuccess: (ByteArray) -> Unit,
+    onError: () -> Unit,
+  ) {
     val envelope = preferences(activity).getString(BIOMETRIC_ENVELOPE, null)
-    if (envelope == null || !isAvailable(activity)) {
+    if (envelope == null || expectedContext.isBlank() || !isAvailable(activity)) {
       onError()
       return
     }
-    val cipher = AndroidKeystore.biometricDecryptCipher(envelope)
+    val cipher = AndroidKeystore.biometricDecryptCipher(envelope, expectedContext)
     if (cipher == null) {
       clear(activity)
       onError()
       return
     }
     prompt(activity, BiometricPrompt.CryptoObject(cipher), { authenticatedCipher ->
-      val key = AndroidKeystore.biometricDecrypt(authenticatedCipher, envelope)
+      val key = AndroidKeystore.biometricDecrypt(authenticatedCipher, envelope, expectedContext)
       if (key == null) {
         clear(activity)
         onError()
@@ -506,7 +577,7 @@ class AndroidSecurityPlugin(private val activity: Activity) : Plugin(activity) {
       invoke.reject("Invalid biometric key")
       return
     }
-    BiometricVault.wrap(activity, key, {
+    BiometricVault.wrap(activity, key, args.context, {
       key.fill(0)
       invoke.resolveObject(mapOf("enabled" to true, "available" to true))
     }, {

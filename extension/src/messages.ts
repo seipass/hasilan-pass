@@ -4,11 +4,15 @@ export const MESSAGE_CHANNEL = "hasilan-pass-extension-v1" as const;
 
 export type ExtensionRequest =
   | { channel: typeof MESSAGE_CHANNEL; type: "GET_STATE" }
-  | { channel: typeof MESSAGE_CHANNEL; type: "LOGIN"; serverUrl: string; email: string; password: string; secondFactor: string | null; rememberDevice: boolean }
+  | { channel: typeof MESSAGE_CHANNEL; type: "LOGIN"; serverUrl: string; email: string; password: string; secondFactor: string | null; rememberDevice: boolean; rememberUnlock: boolean }
+  | { channel: typeof MESSAGE_CHANNEL; type: "UNLOCK"; email: string; password: string; rememberUnlock: boolean }
   | { channel: typeof MESSAGE_CHANNEL; type: "REGISTER"; serverUrl: string; email: string; password: string }
   | { channel: typeof MESSAGE_CHANNEL; type: "START_ACCOUNT_WEBAUTHN"; mode: "passkey" | "mfa"; serverUrl: string; email: string; password: string }
-  | { channel: typeof MESSAGE_CHANNEL; type: "FINISH_ACCOUNT_WEBAUTHN"; ceremonyId: string; credential: Record<string, unknown>; rememberDevice: boolean }
+  | { channel: typeof MESSAGE_CHANNEL; type: "FINISH_ACCOUNT_WEBAUTHN"; ceremonyId: string; credential: Record<string, unknown>; rememberDevice: boolean; rememberUnlock: boolean }
   | { channel: typeof MESSAGE_CHANNEL; type: "LOCK" }
+  | { channel: typeof MESSAGE_CHANNEL; type: "SET_AUTO_LOCK"; minutes: number | null }
+  | { channel: typeof MESSAGE_CHANNEL; type: "SET_REMEMBER_UNLOCK"; enabled: boolean }
+  | { channel: typeof MESSAGE_CHANNEL; type: "LOGOUT" }
   | { channel: typeof MESSAGE_CHANNEL; type: "SYNC" }
   | { channel: typeof MESSAGE_CHANNEL; type: "LIST_ITEMS"; query: string; category: string }
   | { channel: typeof MESSAGE_CHANNEL; type: "GET_ITEM"; id: string }

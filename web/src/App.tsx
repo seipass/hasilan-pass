@@ -14,7 +14,7 @@ import { OrganizationsDialog } from "./components/OrganizationsDialog";
 import { TransferDialog } from "./components/TransferDialog";
 import type { SharedVaultRuntime } from "./runtime";
 import { deviceIdentifier, downloadPlaintext, messageFromError } from "./security";
-import { TrustedDeviceStore } from "./trusted-device";
+import { DeviceUnlockStore, TrustedDeviceStore, keyVersionFor, type WebSessionRecord } from "./trusted-device";
 import { getWebauthnCredential } from "./webauthn";
 import type {
   DeviceRequest,
@@ -60,6 +60,10 @@ const CATEGORIES = [
 ] as const;
 
 type Category = (typeof CATEGORIES)[number][0] | `folder:${string}`;
+type AutoLockMinutes = 5 | 15 | 30 | 60 | 240;
+type AutoLockSetting = AutoLockMinutes | null;
+const AUTO_LOCK_MINUTES = [5, 15, 30, 60, 240] as const satisfies readonly AutoLockMinutes[];
+type AuthState = "unauthenticated" | "locked" | "unlocked";
 
 interface AppProps {
   runtime: SharedVaultRuntime;
@@ -67,9 +71,11 @@ interface AppProps {
 
 export function App({ runtime }: AppProps) {
   const [api] = useState(() => new ApiClient());
+  const [authState, setAuthState] = useState<AuthState>("unauthenticated");
   const [accountId, setAccountId] = useState<string | null>(null);
   const [accountEmail, setAccountEmail] = useState<string | null>(null);
   const [trustedDevices] = useState(() => new TrustedDeviceStore());
+  const [deviceUnlocks] = useState(() => new DeviceUnlockStore());
   const [items, setItems] = useState<ItemSummary[]>([]);
   const [folders, setFolders] = useState<FolderSummary[]>([]);
   const [category, setCategory] = useState<Category>("all");
@@ -95,18 +101,38 @@ export function App({ runtime }: AppProps) {
   const [organizationCollections, setOrganizationCollections] = useState<CollectionResponse[]>([]);
   const [totp, setTotp] = useState<TotpCode | null>(null);
   const [lockMinutes, setLockMinutes] = useState(readLockMinutes);
+  const [rememberUnlock, setRememberUnlock] = useState(false);
+  const [rememberUnlockBusy, setRememberUnlockBusy] = useState(false);
   const cacheRef = useRef<EncryptedVaultCache | null>(null);
   const cursorRef = useRef<string | null>(null);
   const activityRef = useRef(Date.now());
   const channelRef = useRef<BroadcastChannel | null>(null);
 
-  const clearUnlockedState = useCallback((reason: string | null) => {
+  const clearStoredSession = useCallback(async (expectedSession?: TokenResponse | null): Promise<boolean> => {
+    const record = await deviceUnlocks.loadSession().catch(() => null);
+    if (
+      expectedSession !== undefined
+      && expectedSession !== null
+      && record !== null
+      && (record.accountId !== expectedSession.accountId || record.deviceId !== expectedSession.deviceId)
+    ) {
+      // A new account may have been signed in while the old refresh request completed. Never
+      // delete the new account's durable resume state in response to the old rejection.
+      return false;
+    }
+    if (record === null) {
+      if (expectedSession === undefined) await deviceUnlocks.clearUnlocks().catch(() => undefined);
+    } else {
+      await deviceUnlocks.removeUnlock(record.accountId, record.deviceId).catch(() => undefined);
+    }
+    await deviceUnlocks.removeSession().catch(() => undefined);
+    return true;
+  }, [deviceUnlocks]);
+
+  const clearVaultState = useCallback((reason: string | null) => {
     runtime.lock();
-    api.clearSession();
     cacheRef.current = null;
     cursorRef.current = null;
-    setAccountId(null);
-    setAccountEmail(null);
     setItems([]);
     setFolders([]);
     setSelectedItem(null);
@@ -124,19 +150,53 @@ export function App({ runtime }: AppProps) {
     setTotp(null);
     setSyncStatus("idle");
     setAuthError(reason);
-  }, [api, runtime]);
+  }, [runtime]);
 
-  const lockVault = useCallback((reason: string | null, revoke = true, broadcast = true) => {
-    if (revoke && api.session !== null) {
-      void api.logout().catch(() => undefined);
+  const clearSessionState = useCallback((reason: string | null) => {
+    clearVaultState(reason);
+    api.clearSession();
+    setAccountId(null);
+    setAccountEmail(null);
+    setRememberUnlock(false);
+    setAuthState("unauthenticated");
+  }, [api, clearVaultState]);
+
+  const lockVault = useCallback((reason: string | null, manual = false, broadcast = true) => {
+    if (api.session === null) {
+      clearSessionState(reason);
+      return;
     }
-    clearUnlockedState(reason);
-    if (broadcast) channelRef.current?.postMessage({ type: "lock" });
-  }, [api, clearUnlockedState]);
+    clearVaultState(reason);
+    setAuthState("locked");
+    if (manual) void deviceUnlocks.setManualLockSuppressed(true).catch(() => undefined);
+    if (broadcast) channelRef.current?.postMessage({ type: "lock", manual });
+  }, [api, clearSessionState, clearVaultState, deviceUnlocks]);
+
+  const logoutVault = useCallback(async (reason: string | null = null): Promise<void> => {
+    const current = api.session;
+    try {
+      if (current !== null) await api.logout();
+    } finally {
+      await clearStoredSession();
+      clearSessionState(reason);
+      channelRef.current?.postMessage({ type: "logout" });
+    }
+  }, [api, clearSessionState, clearStoredSession]);
 
   useEffect(() => {
-    api.setSessionLostHandler(() => clearUnlockedState("Your session expired or was revoked. Unlock the vault again."));
-  }, [api, clearUnlockedState]);
+    api.setSessionLostHandler((lostSession) => {
+      if (
+        lostSession !== null
+        && api.session !== null
+        && api.session.sessionId !== lostSession.sessionId
+      ) return;
+      void (async () => {
+        if (await clearStoredSession(lostSession)) {
+          clearSessionState("Your session expired or was revoked. Sign in again.");
+        }
+      })();
+    });
+  }, [api, clearSessionState, clearStoredSession]);
 
   useEffect(() => {
     const readFragment = () => setPendingInvitationToken(readInvitationToken());
@@ -153,13 +213,93 @@ export function App({ runtime }: AppProps) {
     const channel = new BroadcastChannel("hasilan-pass-control-v1");
     channelRef.current = channel;
     channel.onmessage = (event: MessageEvent<unknown>) => {
-      if (isLockMessage(event.data)) lockVault("The vault was locked from another tab.", true, false);
+      if (isLockMessage(event.data)) lockVault("The vault was locked from another tab.", event.data.manual === true, false);
+      if (isLogoutMessage(event.data)) {
+        void (async () => {
+          await clearStoredSession();
+          clearSessionState("You signed out in another tab.");
+        })();
+      }
     };
     return () => {
       channel.close();
       channelRef.current = null;
     };
-  }, [lockVault]);
+  }, [api, clearSessionState, clearStoredSession, lockVault]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const record = await deviceUnlocks.loadSession().catch(() => null);
+      if (cancelled || api.session !== null) return;
+      // An empty record on the first render is normal. Do not clear unlock envelopes here:
+      // registration can save the session concurrently while this initial IndexedDB read is
+      // still in flight. Explicit logout and invalid/revoked records perform the cleanup.
+      if (record === null) return;
+      try {
+        const session = await api.restoreWebSession(record);
+        if (cancelled) return;
+        if (session.accountId !== record.accountId || session.deviceId !== record.deviceId) {
+          throw new Error("The remembered session belongs to another account or device.");
+        }
+        const sessionKeyVersion = await keyVersionFor(session.protectedUserKey, session.kdf);
+        const rememberedKeyCurrent = record.keyVersion === undefined || record.keyVersion === sessionKeyVersion;
+        const shouldRememberUnlock = record.rememberUnlock && rememberedKeyCurrent;
+        setAccountId(session.accountId);
+        setAccountEmail(record.email);
+        setRememberUnlock(shouldRememberUnlock);
+        if (record.rememberUnlock && !rememberedKeyCurrent) {
+          await deviceUnlocks.removeUnlock(record.accountId, record.deviceId).catch(() => undefined);
+        }
+        if (shouldRememberUnlock && !record.manualLockSuppressed) {
+          const key = await deviceUnlocks.loadUnlock(session.accountId, record.deviceId, sessionKeyVersion);
+          if (key === null) throw new Error("The remembered device unlock is unavailable.");
+          try {
+            runtime.unlockWithUserKey(key);
+            // Add key-version metadata when migrating an older envelope.
+            await deviceUnlocks.saveUnlock(session.accountId, record.deviceId, key, sessionKeyVersion);
+          } finally {
+            key.fill(0);
+          }
+          await enterVault(session);
+        } else {
+          setAuthState("locked");
+          setAuthError("Session resumed. Unlock the vault to continue.");
+        }
+        await persistSessionRecord(record.email, shouldRememberUnlock, record.manualLockSuppressed, sessionKeyVersion);
+      } catch (error) {
+        const resumeError = `Session resume failed: ${messageFromError(error)}`;
+        // A revoked/expired server session must remove every local resume capability. A network
+        // or temporary server failure must not turn a reload into an irreversible local logout;
+        // keep the encrypted record so a later reload can retry. Local unlock corruption is
+        // discarded, but the authenticated session record remains available for retry.
+        const serverRejected = (error instanceof ApiError && (error.status === 401 || error.status === 403))
+          || (error instanceof Error && error.message.startsWith("The remembered session belongs"));
+        if (serverRejected || !(error instanceof ApiError)) {
+          await deviceUnlocks.removeUnlock(record.accountId, record.deviceId).catch(() => undefined);
+        }
+        if (serverRejected) await deviceUnlocks.removeSession().catch(() => undefined);
+        else if (!(error instanceof ApiError)) {
+          // A local envelope failure is not a server logout, but the unusable remembered-unlock
+          // preference should be disabled so the next reload falls back to password unlock.
+          await deviceUnlocks.saveSession({
+            ...record,
+            rememberUnlock: false,
+            manualLockSuppressed: false,
+            updatedAt: Date.now(),
+          }).catch(() => undefined);
+        }
+        clearSessionState(null);
+        setAuthError(resumeError);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  // The effect intentionally runs on mount only. A StrictMode development remount must be
+  // allowed to start the second restore attempt after the first attempt is cancelled.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (notice === null) return undefined;
@@ -169,6 +309,7 @@ export function App({ runtime }: AppProps) {
 
   useEffect(() => {
     if (accountId === null) return undefined;
+    if (lockMinutes === null) return undefined;
     const markActivity = () => { activityRef.current = Date.now(); };
     window.addEventListener("pointerdown", markActivity, { passive: true, capture: true });
     window.addEventListener("keydown", markActivity, { capture: true });
@@ -189,7 +330,11 @@ export function App({ runtime }: AppProps) {
   useEffect(() => {
     if (accountId === null) return undefined;
     const refreshEvery = Math.max(60, Math.floor((api.session?.expiresIn ?? 900) * 0.75)) * 1_000;
-    const timer = window.setInterval(() => void api.refresh().catch(() => undefined), refreshEvery);
+    const timer = window.setInterval(() => {
+      void api.refresh()
+        .then(() => persistSessionRecord(accountEmail ?? "", undefined, undefined))
+        .catch(() => undefined);
+    }, refreshEvery);
     return () => window.clearInterval(timer);
   }, [accountId, api]);
 
@@ -232,6 +377,7 @@ export function App({ runtime }: AppProps) {
     password: string,
     secondFactor: string | null,
     rememberDevice: boolean,
+    rememberUnlock: boolean,
   ): Promise<void> {
     setAuthBusy(true);
     setAuthError(null);
@@ -261,6 +407,7 @@ export function App({ runtime }: AppProps) {
           rememberDevice,
         });
         runtime.finishLogin(session.protectedUserKey);
+        await rememberSession(session, email, rememberUnlock);
         if (session.trustedDeviceToken !== null) {
           await trustedDevices.save(email, device.identifier, session.trustedDeviceToken);
         }
@@ -285,6 +432,7 @@ export function App({ runtime }: AppProps) {
     email: string,
     password: string,
     rememberDevice: boolean,
+    rememberUnlock: boolean,
   ): Promise<void> {
     setAuthBusy(true);
     setAuthError(null);
@@ -302,6 +450,7 @@ export function App({ runtime }: AppProps) {
         rememberDevice,
       });
       runtime.finishLogin(session.protectedUserKey);
+      await rememberSession(session, email, rememberUnlock);
       if (session.trustedDeviceToken !== null) {
         await trustedDevices.save(email, device.identifier, session.trustedDeviceToken);
       }
@@ -320,6 +469,7 @@ export function App({ runtime }: AppProps) {
     email: string,
     password: string,
     rememberDevice: boolean,
+    rememberUnlock: boolean,
   ): Promise<void> {
     setAuthBusy(true);
     setAuthError(null);
@@ -337,6 +487,7 @@ export function App({ runtime }: AppProps) {
         rememberDevice,
       });
       runtime.finishLogin(session.protectedUserKey);
+      await rememberSession(session, email, rememberUnlock);
       if (session.trustedDeviceToken !== null) {
         await trustedDevices.save(email, device.identifier, session.trustedDeviceToken);
       }
@@ -376,6 +527,7 @@ export function App({ runtime }: AppProps) {
         trustedDeviceToken: null,
         rememberDevice: false,
       });
+      await rememberSession(session, email, false);
       setAccountEmail(email.trim().toLowerCase());
       await enterVault(session);
     } catch (error) {
@@ -384,6 +536,130 @@ export function App({ runtime }: AppProps) {
       setAuthError(messageFromError(error));
     } finally {
       setAuthBusy(false);
+    }
+  }
+
+  async function unlockWithPassword(email: string, password: string, rememberUnlock: boolean): Promise<void> {
+    setAuthBusy(true);
+    setAuthError(null);
+    try {
+      const session = api.session;
+      if (session === null || accountId === null || accountEmail === null) {
+        throw new Error("The account session is unavailable. Sign in again.");
+      }
+      const normalizedEmail = email.trim().toLowerCase();
+      if (normalizedEmail !== accountEmail.toLowerCase()) throw new Error("Use the email address for this account.");
+      runtime.prepareLogin(normalizedEmail, password, JSON.stringify(session.kdf));
+      password = "";
+      runtime.finishLogin(session.protectedUserKey);
+      await rememberSession(session, normalizedEmail, rememberUnlock);
+      await deviceUnlocks.setManualLockSuppressed(false).catch(() => undefined);
+      await enterVault(session);
+    } catch (error) {
+      runtime.lock();
+      setAuthError(messageFromError(error));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function rememberSession(session: TokenResponse, email: string, rememberUnlock: boolean): Promise<void> {
+    setRememberUnlock(rememberUnlock);
+    if (api.csrfToken === null) throw new Error("The browser session did not return a CSRF token.");
+    const keyVersion = await keyVersionFor(session.protectedUserKey, session.kdf);
+    if (!rememberUnlock) {
+      await deviceUnlocks.removeUnlock(session.accountId, session.deviceId);
+    } else {
+      const key = runtime.exportUserKey();
+      try {
+        await deviceUnlocks.saveUnlock(session.accountId, session.deviceId, key, keyVersion);
+      } finally {
+        key.fill(0);
+      }
+    }
+    const record: WebSessionRecord = {
+      accountId: session.accountId,
+      email: email.trim().toLowerCase(),
+      deviceId: session.deviceId,
+      csrfToken: api.csrfToken,
+      kdf: session.kdf,
+      protectedUserKey: session.protectedUserKey,
+      keyVersion,
+      rememberUnlock,
+      manualLockSuppressed: false,
+      updatedAt: Date.now(),
+    };
+    await deviceUnlocks.saveSession(record);
+  }
+
+  async function persistSessionRecord(
+    emailOverride?: string,
+    rememberUnlockOverride?: boolean,
+    manualLockSuppressedOverride?: boolean,
+    keyVersionOverride?: string,
+  ): Promise<void> {
+    const session = api.session;
+    if (session === null || api.csrfToken === null) return;
+    const keyVersion = keyVersionOverride ?? await keyVersionFor(session.protectedUserKey, session.kdf);
+    const existing = await deviceUnlocks.loadSession();
+    const email = emailOverride?.trim().toLowerCase() || existing?.email || accountEmail?.toLowerCase() || "";
+    if (email === "") return;
+    await deviceUnlocks.saveSession({
+      accountId: session.accountId,
+      email,
+      deviceId: session.deviceId,
+      csrfToken: api.csrfToken,
+      kdf: session.kdf,
+      protectedUserKey: session.protectedUserKey,
+      keyVersion,
+      rememberUnlock: rememberUnlockOverride ?? existing?.rememberUnlock ?? false,
+      manualLockSuppressed: manualLockSuppressedOverride ?? existing?.manualLockSuppressed ?? false,
+      updatedAt: Date.now(),
+    });
+  }
+
+  async function changeRememberUnlock(enabled: boolean): Promise<void> {
+    const session = api.session;
+    // Registration enters the vault immediately after persisting the session. React may not
+    // have committed `accountEmail` yet when the first sidebar interaction arrives, so use the
+    // durable record as the source of truth during that short transition as well.
+    const storedSession = accountEmail === null
+      ? await deviceUnlocks.loadSession().catch(() => null)
+      : null;
+    const email = accountEmail ?? storedSession?.email ?? null;
+    if (session === null || email === null) return;
+    if (enabled && !runtime.isUnlocked) {
+      setAuthError("Unlock the vault before enabling remembered unlock.");
+      return;
+    }
+    const previous = rememberUnlock;
+    // Reflect the native checkbox immediately. Persistence is asynchronous; if it fails, the
+    // caller displays the error and we restore the previous controlled value below.
+    setRememberUnlock(enabled);
+    setRememberUnlockBusy(true);
+    try {
+      if (enabled) {
+        const key = runtime.exportUserKey();
+        try {
+          await deviceUnlocks.saveUnlock(
+            session.accountId,
+            session.deviceId,
+            key,
+            await keyVersionFor(session.protectedUserKey, session.kdf),
+          );
+        } finally {
+          key.fill(0);
+        }
+      } else {
+        await deviceUnlocks.removeUnlock(session.accountId, session.deviceId);
+      }
+      await persistSessionRecord(email, enabled, false);
+      setNotice(enabled ? "This device will remember the encrypted vault unlock." : "Remembered unlock removed from this device.");
+    } catch (error) {
+      setRememberUnlock(previous);
+      throw error;
+    } finally {
+      setRememberUnlockBusy(false);
     }
   }
 
@@ -414,6 +690,7 @@ export function App({ runtime }: AppProps) {
     }
 
     setAccountId(session.accountId);
+    setAuthState("unlocked");
     activityRef.current = Date.now();
     try {
       await syncVault(cache);
@@ -898,18 +1175,24 @@ export function App({ runtime }: AppProps) {
     setNotice("Plaintext export downloaded. Store it safely and delete it after use.");
   }
 
-  function changeLockMinutes(value: number): void {
+  function changeLockMinutes(value: AutoLockSetting): void {
     setLockMinutes(value);
     activityRef.current = Date.now();
-    try { localStorage.setItem("hasilan-pass-lock-minutes", String(value)); } catch { /* preference persistence is optional */ }
+    try {
+      localStorage.setItem("hasilan-pass-lock-minutes", value === null ? "never" : String(value));
+    } catch { /* preference persistence is optional */ }
   }
 
-  if (accountId === null) {
+  if (authState !== "unlocked") {
     return (
       <AuthScreen
         busy={authBusy}
         error={authError}
+        initialEmail={accountEmail}
+        locked={authState === "locked"}
         onLogin={login}
+        onLogout={() => void logoutVault("You signed out of this browser.")}
+        onUnlock={unlockWithPassword}
         onPasskeyLogin={passkeyLogin}
         onRegister={register}
         onWebauthnMfaLogin={webauthnMfaLogin}
@@ -943,12 +1226,21 @@ export function App({ runtime }: AppProps) {
           <div><strong>End-to-end encrypted</strong><span>Keys live in this tab</span></div>
         </div>
         <label className="lock-setting">
+          <span><input checked={rememberUnlock} disabled={rememberUnlockBusy} onChange={(event) => void changeRememberUnlock(event.currentTarget.checked).catch((error) => setAuthError(messageFromError(error)))} type="checkbox" /> Remember unlock</span>
+          <small className="remember-warning">Device access can unlock the vault; memory-only mode is stronger.</small>
+        </label>
+        <label className="lock-setting">
           Auto-lock
-          <select onChange={(event) => changeLockMinutes(Number(event.target.value))} value={lockMinutes}>
+          <select
+            onChange={(event) => changeLockMinutes(parseAutoLockSetting(event.target.value))}
+            value={lockMinutes === null ? "never" : String(lockMinutes)}
+          >
             <option value="5">5 minutes</option>
             <option value="15">15 minutes</option>
             <option value="30">30 minutes</option>
             <option value="60">1 hour</option>
+            <option value="240">4 hours</option>
+            <option value="never">Never</option>
           </select>
         </label>
       </aside>
@@ -992,7 +1284,7 @@ export function App({ runtime }: AppProps) {
                   <option value="sshKey">SSH key</option>
                 </select>
               </label>
-              <button aria-label={`New ${itemKindLabel(newItemKind).toLowerCase()}`} className="primary-button" onClick={() => { setGeneratedForEditor(undefined); setEditorKind(newItemKind); setEditorItem(null); }} type="button"><span>＋</span> New item</button>
+              <button aria-label={`New ${itemKindLabel(newItemKind).toLowerCase()}`} className="primary-button" disabled={rememberUnlockBusy} onClick={() => { setGeneratedForEditor(undefined); setEditorKind(newItemKind); setEditorItem(null); }} type="button"><span>＋</span> New item</button>
             </div>
           </header>
 
@@ -1048,7 +1340,8 @@ export function App({ runtime }: AppProps) {
         />
       )}
 
-      <button className="lock-button" onClick={() => lockVault(null)} type="button">⌑ Lock vault</button>
+      <button className="lock-button" onClick={() => lockVault("Vault locked. Your session remains active.", true)} type="button">⌑ Lock vault</button>
+      <button className="logout-button" onClick={() => void logoutVault("You signed out of this browser.")} type="button">↪ Log out</button>
       {notice === null ? null : <div className="toast" role="status">{notice}</div>}
 
       {editorItem === undefined ? null : editorKind === "login" ? (
@@ -1115,7 +1408,7 @@ export function App({ runtime }: AppProps) {
             return runtime.prepareLogin(accountEmail, masterPassword, JSON.stringify(session.kdf));
           }}
           onClose={() => setShowAccount(false)}
-          onCurrentRevoked={() => lockVault("The current session was revoked.", false)}
+          onCurrentRevoked={() => void logoutVault("The current session was revoked.")}
           onNotice={setNotice}
           onTrustRevoked={(deviceId) => {
             if (api.session?.deviceId === deviceId) {
@@ -1141,14 +1434,24 @@ function webDevice(): DeviceRequest {
   return { identifier: deviceIdentifier(), name: "Hasilan Web Vault", deviceType: "web" };
 }
 
-function readLockMinutes(): number {
+function readLockMinutes(): AutoLockSetting {
   try {
-    const value = Number(localStorage.getItem("hasilan-pass-lock-minutes"));
-    if ([5, 15, 30, 60].includes(value)) return value;
+    const stored = localStorage.getItem("hasilan-pass-lock-minutes");
+    if (stored === "never") return null;
+    const value = Number(stored);
+    if (AUTO_LOCK_MINUTES.includes(value as AutoLockMinutes)) return value as AutoLockMinutes;
   } catch {
     // Local preference storage is optional.
   }
   return 15;
+}
+
+function parseAutoLockSetting(value: string): AutoLockSetting {
+  if (value === "never") return null;
+  const minutes = Number(value);
+  return AUTO_LOCK_MINUTES.includes(minutes as AutoLockMinutes)
+    ? minutes as AutoLockMinutes
+    : 15;
 }
 
 function readInvitationToken(): string | null {
@@ -1162,8 +1465,16 @@ function clearInvitationFragment(): void {
   window.history.replaceState(window.history.state, "", url);
 }
 
-function isLockMessage(value: unknown): value is { type: "lock" } {
-  return typeof value === "object" && value !== null && "type" in value && value.type === "lock";
+function isLockMessage(value: unknown): value is { type: "lock"; manual?: boolean } {
+  return typeof value === "object"
+    && value !== null
+    && "type" in value
+    && value.type === "lock"
+    && (!("manual" in value) || typeof value.manual === "boolean");
+}
+
+function isLogoutMessage(value: unknown): value is { type: "logout" } {
+  return typeof value === "object" && value !== null && "type" in value && value.type === "logout";
 }
 
 function syncLabel(status: "idle" | "syncing" | "offline" | "error"): string {

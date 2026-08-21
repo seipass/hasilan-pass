@@ -20,6 +20,10 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use chacha20poly1305::{
+    XChaCha20Poly1305, XNonce,
+    aead::{Aead, KeyInit, Payload},
+};
 use chrono::{DateTime, Utc};
 pub use hasilan_bitwarden_compat::BitwardenFolder;
 use hasilan_bitwarden_compat::{BitwardenCollection, ImportedVault, export_json, import_json};
@@ -66,6 +70,10 @@ const MAX_PROFILES: usize = 10;
 const MAX_ITEMS: usize = 40_000;
 const MAX_FOLDERS: usize = 2_000;
 const DEFAULT_AUTO_LOCK_MINUTES: u32 = 15;
+const NEVER_AUTO_LOCK: u32 = 0;
+const LEGACY_DEVICE_UNLOCK_VERSION: u8 = 1;
+const DEVICE_UNLOCK_VERSION: u8 = 2;
+const DEVICE_UNLOCK_KEY_VERSION_BYTES: usize = 32;
 
 /// A UI-safe native runtime failure. Secret-bearing source errors are never formatted.
 #[derive(Debug, Error)]
@@ -251,6 +259,8 @@ pub struct DesktopStatus {
     pub conflict_count: usize,
     /// Current automatic-lock delay.
     pub auto_lock_minutes: u32,
+    /// Whether this device may restore the encrypted vault key from OS secure storage.
+    pub remember_unlock: bool,
     /// Time of the most recent successful pull.
     pub last_sync_at: Option<DateTime<Utc>>,
     /// Other cached account profiles available for switching.
@@ -442,6 +452,10 @@ struct CacheDocument {
     version: u32,
     #[serde(default = "default_auto_lock_minutes")]
     auto_lock_minutes: u32,
+    #[serde(default)]
+    remember_unlock: bool,
+    #[serde(default)]
+    manual_lock_suppressed: bool,
     active_scope: Option<String>,
     #[serde(default)]
     profiles: Vec<CachedProfile>,
@@ -452,6 +466,8 @@ impl Default for CacheDocument {
         Self {
             version: CACHE_VERSION,
             auto_lock_minutes: DEFAULT_AUTO_LOCK_MINUTES,
+            remember_unlock: false,
+            manual_lock_suppressed: false,
             active_scope: None,
             profiles: Vec::new(),
         }
@@ -539,6 +555,7 @@ impl DesktopClient {
             pending_count: profile.map_or(0, |value| value.replica.outbox().len()),
             conflict_count: profile.map_or(0, |value| value.replica.conflicts().len()),
             auto_lock_minutes: self.document.auto_lock_minutes,
+            remember_unlock: self.document.remember_unlock,
             last_sync_at: profile.and_then(|value| value.last_sync_at),
             profiles: self
                 .document
@@ -588,6 +605,117 @@ impl DesktopClient {
             .await;
         master_password.zeroize();
         result
+    }
+
+    /// Unlocks the active cached profile locally without creating or rotating a server session.
+    ///
+    /// This is the password counterpart to [`Self::unlock_with_device_key`]. It keeps any
+    /// authenticated session and refresh credential intact, so locking and unlocking a desktop
+    /// window does not create duplicate server sessions.
+    pub fn unlock_with_password(
+        &mut self,
+        mut master_password: String,
+    ) -> Result<DesktopStatus, DesktopError> {
+        let result = self.unlock_with_password_inner(&master_password);
+        master_password.zeroize();
+        result
+    }
+
+    fn unlock_with_password_inner(
+        &mut self,
+        master_password: &str,
+    ) -> Result<DesktopStatus, DesktopError> {
+        if master_password.is_empty() || master_password.len() > 16_384 {
+            return Err(DesktopError::InvalidInput);
+        }
+        let index = self.active.ok_or(DesktopError::NotFound)?;
+        let profile = self
+            .document
+            .profiles
+            .get(index)
+            .ok_or(DesktopError::NotFound)?
+            .clone();
+        let prepared = prepare_login(
+            &profile.email,
+            master_password.as_bytes(),
+            &kdf_config(&profile.kdf)?,
+        )
+        .map_err(|_| DesktopError::Crypto)?;
+        let user_key = prepared
+            .finish(&profile.protected_user_key)
+            .map_err(|_| DesktopError::UnlockFailed)?;
+        self.document.active_scope = Some(profile.scope);
+        self.document.manual_lock_suppressed = false;
+        self.load_unlocked(user_key)?;
+        if self.document.remember_unlock {
+            let current = self.active_profile().ok_or(DesktopError::NotFound)?.clone();
+            let key = self.require_unlocked()?.user_key.clone();
+            self.store_wrapped_unlock(&current, &key)?;
+        }
+        self.touch();
+        self.persist()?;
+        Ok(self.status())
+    }
+
+    /// Resumes the active profile's server session from its OS-protected refresh credential.
+    /// Access tokens remain process-memory-only; a remembered vault key is restored separately.
+    pub async fn resume_session(&mut self) -> Result<DesktopStatus, DesktopError> {
+        let index = self.active.ok_or(DesktopError::NotFound)?;
+        let profile = self
+            .document
+            .profiles
+            .get(index)
+            .ok_or(DesktopError::NotFound)?
+            .clone();
+        let refresh_key = refresh_secret_key(&profile);
+        let mut refresh = self
+            .secret_store
+            .get(&refresh_key)?
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .ok_or(DesktopError::AuthenticationRequired)?;
+        let api = ApiClient::new(&profile.server_url).map_err(map_client_error)?;
+        let result = api.refresh(refresh.clone()).await;
+        refresh.zeroize();
+        let token = match result {
+            Ok(token) => token,
+            Err(error) => {
+                // A temporary offline/TLS/DNS failure must not turn a restart into a logout.
+                // Delete credentials only when the server explicitly rejects this session.
+                if is_unauthorized(&error) {
+                    self.invalidate_server_session()?;
+                    return Err(DesktopError::AuthenticationRequired);
+                }
+                self.session = None;
+                self.api = None;
+                self.online = false;
+                self.persist()?;
+                return Err(map_client_error(error));
+            }
+        };
+        self.document.profiles[index]
+            .protected_user_key
+            .clone_from(&token.protected_user_key);
+        self.document.profiles[index].kdf.clone_from(&token.kdf);
+        self.store_session_secrets(index, &token)?;
+        self.api = Some(api);
+        self.session = Some(token);
+        self.online = true;
+        if self.document.remember_unlock && !self.document.manual_lock_suppressed {
+            let profile = self.document.profiles[index].clone();
+            match self.load_wrapped_unlock(&profile) {
+                Ok(key) => {
+                    self.load_unlocked(key)?;
+                    let key = self.require_unlocked()?.user_key.clone();
+                    self.store_wrapped_unlock(&profile, &key)?;
+                }
+                Err(_) => {
+                    self.disable_remembered_unlock(&profile)?;
+                }
+            }
+        }
+        self.touch();
+        self.persist()?;
+        Ok(self.status())
     }
 
     /// Starts an account-passkey login using the existing server `WebAuthn` ceremony.
@@ -846,20 +974,47 @@ impl DesktopClient {
         {
             if let Some(profile) = self.active_profile() {
                 self.secret_store.delete(&refresh_secret_key(profile))?;
+                self.secret_store
+                    .delete(&wrapped_unlock_secret_key(profile))?;
             }
-            return Ok(self.lock());
+            self.session = None;
+            self.api = None;
+            self.online = false;
+            self.document.remember_unlock = false;
+            self.document.manual_lock_suppressed = false;
+            self.vault = None;
+            self.active = None;
+            self.document.active_scope = None;
+            self.persist()?;
+            return Ok(self.status());
         }
         Ok(self.status())
     }
 
-    /// Removes every decrypted item and key from memory without deleting ciphertext.
+    /// Removes decrypted items and keys from memory while keeping the authenticated server
+    /// session alive. Use [`Self::logout`] to revoke the session and remove remembered unlock.
     pub fn lock(&mut self) -> DesktopStatus {
-        self.vault = None;
-        self.session = None;
-        self.pending_account_passkey_login = None;
-        self.online = false;
-        self.last_activity = Instant::now();
+        self.lock_internal(true);
         self.status()
+    }
+
+    /// Drops decrypted state when the host application leaves the foreground without treating
+    /// that lifecycle event as an explicit user lock. A remembered device envelope may therefore
+    /// restore the vault when the application is activated again, while the authenticated session
+    /// remains separate and available for refresh.
+    pub fn lock_for_background(&mut self) -> DesktopStatus {
+        self.lock_internal(false);
+        self.status()
+    }
+
+    fn lock_internal(&mut self, manual: bool) {
+        self.vault = None;
+        self.pending_account_passkey_login = None;
+        if manual {
+            self.document.manual_lock_suppressed = true;
+            let _ = self.persist();
+        }
+        self.last_activity = Instant::now();
     }
 
     /// Returns the current in-memory user key for an operating-system biometric wrapper.
@@ -870,6 +1025,22 @@ impl DesktopClient {
     pub fn biometric_unlock_key(&mut self) -> Result<[u8; 64], DesktopError> {
         self.touch();
         Ok(*self.require_unlocked()?.user_key.as_bytes())
+    }
+
+    /// Returns non-secret context that the Android Keystore biometric envelope authenticates.
+    ///
+    /// The context binds the envelope to this server/account/device profile and to the current
+    /// protected user-key/KDF tuple. It contains no password or key material; changing the
+    /// account, device, or server-provided key metadata makes an old envelope unusable.
+    pub fn biometric_unlock_context(&self) -> Result<String, DesktopError> {
+        let profile = self.active_profile().ok_or(DesktopError::NotFound)?;
+        Ok(format!(
+            "hasilan-pass/android-biometric/v1/{}/{}/{}/{}",
+            profile.scope,
+            profile.account_id,
+            profile.device_identifier,
+            hex::encode(unlock_key_version(profile)),
+        ))
     }
 
     /// Unlocks the active encrypted cache with a key that has just been released by the
@@ -889,6 +1060,7 @@ impl DesktopClient {
         self.api = Some(api);
         self.session = None;
         self.online = false;
+        self.document.manual_lock_suppressed = false;
         self.load_unlocked(user_key)?;
         self.touch();
         Ok(self.status())
@@ -896,15 +1068,32 @@ impl DesktopClient {
 
     /// Revokes the current session when online, deletes its keychain refresh token, and locks.
     pub async fn logout(&mut self) -> Result<DesktopStatus, DesktopError> {
-        if let (Some(api), Some(session)) = (&self.api, &self.session) {
+        let remote_error = if let (Some(api), Some(session)) = (&self.api, &self.session) {
             api.logout(&session.access_token, Some(session.refresh_token.clone()))
                 .await
-                .map_err(map_client_error)?;
-        }
+                .err()
+                .map(map_client_error)
+        } else {
+            None
+        };
         if let Some(profile) = self.active_profile() {
             self.secret_store.delete(&refresh_secret_key(profile))?;
+            self.secret_store
+                .delete(&wrapped_unlock_secret_key(profile))?;
         }
-        Ok(self.lock())
+        self.session = None;
+        self.api = None;
+        self.online = false;
+        self.document.remember_unlock = false;
+        self.document.manual_lock_suppressed = false;
+        self.vault = None;
+        self.active = None;
+        self.document.active_scope = None;
+        self.persist()?;
+        match remote_error {
+            Some(error) => Err(error),
+            None => Ok(self.status()),
+        }
     }
 
     /// Updates activity used by the native automatic-lock monitor.
@@ -917,9 +1106,12 @@ impl DesktopClient {
         if self.vault.is_none() {
             return false;
         }
+        if self.document.auto_lock_minutes == NEVER_AUTO_LOCK {
+            return false;
+        }
         let duration = Duration::from_secs(u64::from(self.document.auto_lock_minutes) * 60);
         if self.last_activity.elapsed() >= duration {
-            self.lock();
+            self.lock_internal(false);
             true
         } else {
             false
@@ -928,12 +1120,65 @@ impl DesktopClient {
 
     /// Persists a bounded automatic-lock delay.
     pub fn set_auto_lock_minutes(&mut self, minutes: u32) -> Result<DesktopStatus, DesktopError> {
-        if !(1..=240).contains(&minutes) {
+        if minutes != NEVER_AUTO_LOCK && !(1..=240).contains(&minutes) {
             return Err(DesktopError::InvalidInput);
         }
         self.document.auto_lock_minutes = minutes;
         self.persist()?;
         self.touch();
+        Ok(self.status())
+    }
+
+    /// Enables or disables opt-in device unlock backed by the native OS secure store.
+    pub fn set_remember_unlock(&mut self, enabled: bool) -> Result<DesktopStatus, DesktopError> {
+        if enabled {
+            let profile = self.active_profile().ok_or(DesktopError::NotFound)?;
+            let key = self.require_unlocked()?.user_key.clone();
+            self.store_wrapped_unlock(profile, &key)?;
+        } else if let Some(profile) = self.active_profile() {
+            self.secret_store
+                .delete(&wrapped_unlock_secret_key(profile))?;
+        }
+        self.document.remember_unlock = enabled;
+        self.document.manual_lock_suppressed = false;
+        self.persist()?;
+        Ok(self.status())
+    }
+
+    /// Restores the locally cached vault key from an OS-backed device envelope.
+    /// This never restores an access token; network authentication remains separate.
+    pub fn unlock_with_device_key(&mut self) -> Result<DesktopStatus, DesktopError> {
+        if self.vault.is_some() {
+            self.touch();
+            return Ok(self.status());
+        }
+        if !self.document.remember_unlock || self.document.manual_lock_suppressed {
+            return Err(DesktopError::Locked);
+        }
+        let profile = self.active_profile().ok_or(DesktopError::NotFound)?.clone();
+        let key = match self.load_wrapped_unlock(&profile) {
+            Ok(key) => key,
+            Err(error) => {
+                self.disable_remembered_unlock(&profile)?;
+                return Err(error);
+            }
+        };
+        if self.api.is_none() {
+            self.api = Some(ApiClient::new(&profile.server_url).map_err(map_client_error)?);
+        }
+        // Keep an in-memory authenticated session when this is a foreground/background cycle.
+        // A process restart has no session here, so it remains an offline local unlock until the
+        // normal resume_session command restores the OS-protected refresh credential.
+        if self.session.is_none() {
+            self.online = false;
+        }
+        self.load_unlocked(key)?;
+        let profile = self.active_profile().ok_or(DesktopError::NotFound)?.clone();
+        let key = self.require_unlocked()?.user_key.clone();
+        self.store_wrapped_unlock(&profile, &key)?;
+        self.document.manual_lock_suppressed = false;
+        self.touch();
+        self.persist()?;
         Ok(self.status())
     }
 
@@ -1080,6 +1325,7 @@ impl DesktopClient {
         self.api = Some(api);
         self.session = None;
         self.online = false;
+        self.document.manual_lock_suppressed = false;
         self.load_unlocked(user_key)?;
         self.touch();
         self.persist()?;
@@ -1162,7 +1408,13 @@ impl DesktopClient {
         self.api = Some(api);
         self.session = Some(token);
         self.online = true;
+        self.document.manual_lock_suppressed = false;
         self.load_unlocked(user_key)?;
+        if self.document.remember_unlock {
+            let profile = self.document.profiles[index].clone();
+            let key = self.require_unlocked()?.user_key.clone();
+            self.store_wrapped_unlock(&profile, &key)?;
+        }
         self.touch();
         Ok(())
     }
@@ -1175,15 +1427,111 @@ impl DesktopClient {
         let profile = &self.document.profiles[profile_index];
         self.secret_store
             .set(&refresh_secret_key(profile), token.refresh_token.as_bytes())?;
-        let device_key = device_secret_key(profile);
-        if self.secret_store.get(&device_key)?.is_none() {
-            let mut secret = [0_u8; 32];
-            getrandom::fill(&mut secret).map_err(|_| DesktopError::Crypto)?;
-            let result = self.secret_store.set(&device_key, &secret);
-            secret.zeroize();
-            result?;
-        }
+        self.ensure_device_secret(profile)?;
         Ok(())
+    }
+
+    fn ensure_device_secret(&self, profile: &CachedProfile) -> Result<[u8; 32], DesktopError> {
+        let key = device_secret_key(profile);
+        if let Some(existing) = self.secret_store.get(&key)? {
+            return existing.try_into().map_err(|_| DesktopError::Crypto);
+        }
+        let mut secret = [0_u8; 32];
+        getrandom::fill(&mut secret).map_err(|_| DesktopError::Crypto)?;
+        self.secret_store.set(&key, &secret)?;
+        Ok(secret)
+    }
+
+    fn store_wrapped_unlock(
+        &self,
+        profile: &CachedProfile,
+        user_key: &CompositeKey,
+    ) -> Result<(), DesktopError> {
+        let key_version = unlock_key_version(profile);
+        let mut secret = self.ensure_device_secret(profile)?;
+        let cipher =
+            XChaCha20Poly1305::new_from_slice(&secret).map_err(|_| DesktopError::Crypto)?;
+        secret.zeroize();
+        let mut nonce = [0_u8; 24];
+        getrandom::fill(&mut nonce).map_err(|_| DesktopError::Crypto)?;
+        let aad = wrapped_unlock_aad(profile, &key_version);
+        let ciphertext = cipher
+            .encrypt(
+                XNonce::from_slice(&nonce),
+                Payload {
+                    msg: user_key.as_bytes(),
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| DesktopError::Crypto)?;
+        let mut envelope =
+            Vec::with_capacity(1 + nonce.len() + key_version.len() + ciphertext.len());
+        envelope.push(DEVICE_UNLOCK_VERSION);
+        envelope.extend_from_slice(&nonce);
+        envelope.extend_from_slice(&key_version);
+        envelope.extend_from_slice(&ciphertext);
+        let result = self
+            .secret_store
+            .set(&wrapped_unlock_secret_key(profile), &envelope);
+        envelope.zeroize();
+        result?;
+        Ok(())
+    }
+
+    fn disable_remembered_unlock(&mut self, profile: &CachedProfile) -> Result<(), DesktopError> {
+        self.secret_store
+            .delete(&wrapped_unlock_secret_key(profile))?;
+        self.document.remember_unlock = false;
+        self.persist()
+    }
+
+    fn load_wrapped_unlock(&self, profile: &CachedProfile) -> Result<CompositeKey, DesktopError> {
+        let secret = self
+            .secret_store
+            .get(&device_secret_key(profile))?
+            .ok_or(DesktopError::Locked)?;
+        let mut key: [u8; 32] = secret.try_into().map_err(|_| DesktopError::Crypto)?;
+        let result = (|| -> Result<CompositeKey, DesktopError> {
+            let envelope = self
+                .secret_store
+                .get(&wrapped_unlock_secret_key(profile))?
+                .ok_or(DesktopError::Locked)?;
+            if envelope.len() < 1 + 24 + 16 {
+                return Err(DesktopError::Crypto);
+            }
+            let cipher =
+                XChaCha20Poly1305::new_from_slice(&key).map_err(|_| DesktopError::Crypto)?;
+            let (nonce_start, ciphertext_start, aad) = match envelope[0] {
+                LEGACY_DEVICE_UNLOCK_VERSION => (1, 25, wrapped_unlock_legacy_aad(profile)),
+                DEVICE_UNLOCK_VERSION => {
+                    let key_version_start = 1 + 24;
+                    let ciphertext_start = key_version_start + DEVICE_UNLOCK_KEY_VERSION_BYTES;
+                    if envelope.len() < ciphertext_start + 16 {
+                        return Err(DesktopError::Crypto);
+                    }
+                    let expected = unlock_key_version(profile);
+                    if envelope[key_version_start..ciphertext_start] != expected[..] {
+                        return Err(DesktopError::Locked);
+                    }
+                    (1, ciphertext_start, wrapped_unlock_aad(profile, &expected))
+                }
+                _ => return Err(DesktopError::Crypto),
+            };
+            let mut plaintext = cipher
+                .decrypt(
+                    XNonce::from_slice(&envelope[nonce_start..nonce_start + 24]),
+                    Payload {
+                        msg: &envelope[ciphertext_start..],
+                        aad: &aad,
+                    },
+                )
+                .map_err(|_| DesktopError::Crypto)?;
+            let result = CompositeKey::from_slice(&plaintext).map_err(|_| DesktopError::Crypto);
+            plaintext.zeroize();
+            result
+        })();
+        key.zeroize();
+        result
     }
 
     fn load_unlocked(&mut self, user_key: CompositeKey) -> Result<(), DesktopError> {
@@ -1225,11 +1573,15 @@ impl DesktopClient {
         let result = self.sync_online().await;
         match result {
             Ok(()) => self.online = true,
-            Err(DesktopError::Offline | DesktopError::AuthenticationRequired) => {
+            Err(DesktopError::Offline) => {
                 self.online = false;
                 self.persist()?;
                 self.touch();
                 return Ok(self.status());
+            }
+            Err(DesktopError::AuthenticationRequired) => {
+                self.invalidate_server_session()?;
+                return Err(DesktopError::AuthenticationRequired);
             }
             Err(error) => return Err(error),
         }
@@ -1387,7 +1739,11 @@ impl DesktopClient {
     async fn rotate_session(&mut self) -> Result<(), DesktopError> {
         let profile = self.active_profile().ok_or(DesktopError::NotFound)?;
         let refresh_key = refresh_secret_key(profile);
-        let mut refresh_token = self
+        // A locally unlocked/offline profile has no transport at all. Treat that as the
+        // normal offline path; only an actual refresh response can prove that a session was
+        // revoked and should clear authenticated state.
+        let api = self.api.clone().ok_or(DesktopError::Offline)?;
+        let Some(mut refresh_token) = self
             .session
             .as_ref()
             .map(|session| session.refresh_token.clone())
@@ -1398,11 +1754,21 @@ impl DesktopClient {
                     .flatten()
                     .and_then(|bytes| String::from_utf8(bytes).ok())
             })
-            .ok_or(DesktopError::AuthenticationRequired)?;
-        let api = self.api.clone().ok_or(DesktopError::Offline)?;
+        else {
+            // A profile opened with the password while offline has no server session by design.
+            // Keep its encrypted local outbox usable instead of treating that as a remote revoke.
+            return Err(DesktopError::Offline);
+        };
         let result = api.refresh(refresh_token.clone()).await;
         refresh_token.zeroize();
-        let token = result.map_err(map_client_error)?;
+        let token = match result {
+            Ok(token) => token,
+            Err(error) if is_unauthorized(&error) => {
+                self.invalidate_server_session()?;
+                return Err(DesktopError::AuthenticationRequired);
+            }
+            Err(error) => return Err(map_client_error(error)),
+        };
         let index = self.active.ok_or(DesktopError::NotFound)?;
         self.document.profiles[index]
             .protected_user_key
@@ -1411,6 +1777,26 @@ impl DesktopClient {
         self.store_session_secrets(index, &token)?;
         self.session = Some(token);
         Ok(())
+    }
+
+    /// Drops local authenticated state after the server has explicitly rejected the session.
+    /// This is intentionally different from a user lock: a remote revoke is an authentication
+    /// boundary, so remembered device-unlock material must not remain usable silently.
+    fn invalidate_server_session(&mut self) -> Result<(), DesktopError> {
+        if let Some(profile) = self.active_profile() {
+            self.secret_store.delete(&refresh_secret_key(profile))?;
+            self.secret_store
+                .delete(&wrapped_unlock_secret_key(profile))?;
+        }
+        self.session = None;
+        self.api = None;
+        self.online = false;
+        self.document.remember_unlock = false;
+        self.document.manual_lock_suppressed = false;
+        self.vault = None;
+        self.active = None;
+        self.document.active_scope = None;
+        self.persist()
     }
 
     async fn flush_outbox(&mut self) -> Result<(), DesktopError> {
@@ -3035,7 +3421,8 @@ fn load_document(path: &Path) -> Result<CacheDocument, DesktopError> {
     let document: CacheDocument =
         serde_json::from_slice(&bytes).map_err(|_| DesktopError::Cache)?;
     if document.version != CACHE_VERSION
-        || !(1..=240).contains(&document.auto_lock_minutes)
+        || (document.auto_lock_minutes != NEVER_AUTO_LOCK
+            && !(1..=240).contains(&document.auto_lock_minutes))
         || document.profiles.len() > MAX_PROFILES
         || document
             .profiles
@@ -3098,6 +3485,37 @@ fn refresh_secret_key(profile: &CachedProfile) -> String {
 
 fn device_secret_key(profile: &CachedProfile) -> String {
     format!("device-{}", profile.scope)
+}
+
+fn wrapped_unlock_secret_key(profile: &CachedProfile) -> String {
+    format!("device-unlock-{}", profile.scope)
+}
+
+fn unlock_key_version(profile: &CachedProfile) -> [u8; DEVICE_UNLOCK_KEY_VERSION_BYTES] {
+    let kdf = serde_json::to_vec(&profile.kdf).unwrap_or_default();
+    let mut digest = Sha256::new();
+    digest.update(b"hasilan-pass/device-unlock/key-version/v1\0");
+    digest.update(profile.protected_user_key.as_bytes());
+    digest.update([0]);
+    digest.update(kdf);
+    digest.finalize().into()
+}
+
+fn wrapped_unlock_aad(profile: &CachedProfile, key_version: &[u8]) -> Vec<u8> {
+    format!(
+        "hasilan-pass/device-unlock/v{DEVICE_UNLOCK_VERSION}/{}/{}",
+        profile.scope,
+        hex::encode(key_version),
+    )
+    .into_bytes()
+}
+
+fn wrapped_unlock_legacy_aad(profile: &CachedProfile) -> Vec<u8> {
+    format!(
+        "hasilan-pass/device-unlock/v{LEGACY_DEVICE_UNLOCK_VERSION}/{}",
+        profile.scope
+    )
+    .into_bytes()
 }
 
 fn desktop_device(identifier: Uuid) -> DeviceRequest {
@@ -4124,6 +4542,40 @@ mod tests {
         );
         let raw = fs::read_to_string(path).unwrap();
         assert!(!raw.contains("keychain-only-refresh-token"));
+    }
+
+    #[test]
+    fn opted_in_device_unlock_is_wrapped_and_manual_lock_suppresses_restore() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("vault-cache.json");
+        let (mut client, _) = unlocked_fixture(&path);
+        client.set_remember_unlock(true).unwrap();
+        client.lock_for_background();
+        assert!(client.unlock_with_device_key().unwrap().unlocked);
+        client.lock();
+        assert!(matches!(
+            client.unlock_with_device_key(),
+            Err(DesktopError::Locked)
+        ));
+    }
+
+    #[test]
+    fn device_unlock_survives_process_reopen_and_rejects_key_rotation() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("vault-cache.json");
+        let (mut client, secrets) = unlocked_fixture(&path);
+        client.set_remember_unlock(true).unwrap();
+        client.lock_internal(false);
+        drop(client);
+
+        let mut reopened = DesktopClient::open(&path, secrets).unwrap();
+        assert!(reopened.unlock_with_device_key().unwrap().unlocked);
+        reopened.lock_internal(false);
+        reopened.document.profiles[0].protected_user_key.push('x');
+        assert!(matches!(
+            reopened.unlock_with_device_key(),
+            Err(DesktopError::Locked)
+        ));
     }
 
     #[tokio::test]

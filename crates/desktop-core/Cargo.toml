@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 base64.workspace = true
 chrono.workspace = true
+chacha20poly1305.workspace = true
 getrandom.workspace = true
 hex.workspace = true
 hasilan-bitwarden-compat = { path = "../bitwarden-compat" }

@@ -73,7 +73,11 @@ class AutofillSaveActivity : FragmentActivity() {
 
   private fun save(origin: String, username: String?, password: String) {
     val host = android.net.Uri.parse(origin).host ?: "Login"
-    BiometricVault.unwrap(this, { key ->
+    val context = AutofillNative.unlockContext() ?: run {
+      finish()
+      return
+    }
+    BiometricVault.unwrap(this, context, { key ->
       val unlocked = AutofillNative.unlock(key)
       key.fill(0)
       if (unlocked) AutofillNative.saveLogin(origin, username, password, host)

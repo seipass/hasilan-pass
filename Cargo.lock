@@ -2134,7 +2134,7 @@ dependencies = [
 
 [[package]]
 name = "hasilan-bitwarden-compat"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "hasilan-vault",
@@ -2147,7 +2147,7 @@ dependencies = [
 
 [[package]]
 name = "hasilan-client"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hasilan-protocol",
  "reqwest 0.12.28",
@@ -2159,7 +2159,7 @@ dependencies = [
 
 [[package]]
 name = "hasilan-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "serde",
@@ -2168,7 +2168,7 @@ dependencies = [
 
 [[package]]
 name = "hasilan-crypto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes",
  "argon2",
@@ -2192,7 +2192,7 @@ dependencies = [
 
 [[package]]
 name = "hasilan-desktop"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -2215,9 +2215,10 @@ dependencies = [
 
 [[package]]
 name = "hasilan-desktop-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
+ "chacha20poly1305",
  "chrono",
  "getrandom 0.3.4",
  "hasilan-bitwarden-compat",
@@ -2241,7 +2242,7 @@ dependencies = [
 
 [[package]]
 name = "hasilan-protocol"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "serde",
@@ -2252,7 +2253,7 @@ dependencies = [
 
 [[package]]
 name = "hasilan-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2292,7 +2293,7 @@ dependencies = [
 
 [[package]]
 name = "hasilan-sync"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "hasilan-protocol",
@@ -2303,7 +2304,7 @@ dependencies = [
 
 [[package]]
 name = "hasilan-vault"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "bip39",
@@ -2329,7 +2330,7 @@ dependencies = [
 
 [[package]]
 name = "hasilan-wasm"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",

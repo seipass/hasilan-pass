@@ -6,7 +6,7 @@ import { ATTACHMENT_CHUNK_SIZE, decodeBase64Url, encodeBase64Url } from "./attac
 import { ExtensionCipherCache } from "./cache";
 import { isExtensionRequest, type ExtensionRequest, type ExtensionResponse } from "./messages";
 import { createRuntime, type ExtensionVaultRuntime } from "./runtime";
-import { TrustedDeviceStore } from "./trusted-device";
+import { DeviceSecretStore, TrustedDeviceStore, keyVersionFor } from "./trusted-device";
 import type {
   AttachmentInitiateRequest,
   AttachmentMetadata,
@@ -32,7 +32,7 @@ import type {
 
 const SETTINGS_KEY = "hasilan-extension-settings-v1";
 const LOCK_ALARM = "hasilan-extension-auto-lock";
-const LOCK_MINUTES = 15;
+const DEFAULT_LOCK_MINUTES = 15;
 const PENDING_LIFETIME_MS = 2 * 60_000;
 const CONTENT_SCRIPT = "assets/content.js";
 const PASSKEY_PAGE_SCRIPT = "assets/passkey-page.js";
@@ -47,7 +47,11 @@ interface StoredSettings {
   serverUrl: string;
   email: string;
   deviceIdentifier: string;
+  /** `null` means never auto-lock; omitted in the pre-setting schema. */
+  autoLockMinutes?: AutoLockSetting;
 }
+
+type AutoLockSetting = 1 | 5 | 15 | 30 | 60 | 240 | null;
 
 interface PendingCredential {
   pageUrl: string;
@@ -89,19 +93,26 @@ interface PendingAccountWebauthn {
 const runtimePromise = createRuntime();
 const api = new ExtensionApi();
 const trustedDevices = new TrustedDeviceStore();
+const deviceSecrets = new DeviceSecretStore();
 let settings: StoredSettings | null = null;
 let cache: ExtensionCipherCache | null = null;
 let cursor: string | null = null;
 let pending: PendingCredential | null = null;
 let unlockContext: UnlockContext | null = null;
+let rememberedUnlockEnabled = false;
 const passkeyPrompts = new Map<string, PendingPasskeyPrompt>();
 let pendingAccountWebauthn: PendingAccountWebauthn | null = null;
 
 api.setSessionLostHandler(() => {
-  void lock(false);
+  void handleSessionLost();
+});
+
+api.setSessionChangedHandler((session) => {
+  void persistRefreshToken(session, api.serverUrl ?? undefined);
 });
 
 void initializeSettings();
+const persistentRestore = restorePersistentSession().catch(() => undefined);
 
 browser.runtime.onMessage.addListener((message: unknown, sender: Browser.Runtime.MessageSender) => {
   if (!isExtensionRequest(message)) return undefined;
@@ -111,7 +122,7 @@ browser.runtime.onMessage.addListener((message: unknown, sender: Browser.Runtime
 });
 
 browser.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === LOCK_ALARM) void lock(true);
+  if (alarm.name === LOCK_ALARM) void lock(false);
 });
 
 browser.runtime.onInstalled.addListener(() => {
@@ -140,6 +151,7 @@ browser.windows.onRemoved.addListener((windowId) => {
 async function handleMessage(message: ExtensionRequest, sender: Browser.Runtime.MessageSender): Promise<unknown> {
   const runtime = await runtimePromise;
   await initializeSettings();
+  await persistentRestore;
   switch (message.type) {
     case "GET_STATE":
       return state(runtime);
@@ -152,11 +164,18 @@ async function handleMessage(message: ExtensionRequest, sender: Browser.Runtime.
           message.password,
           message.secondFactor,
           message.rememberDevice,
+          message.rememberUnlock,
         );
       } finally {
         message.password = "";
       }
     }
+    case "UNLOCK":
+      try {
+        return await unlock(runtime, message.email, message.password, message.rememberUnlock);
+      } finally {
+        message.password = "";
+      }
     case "REGISTER": {
       try {
         return await register(runtime, message.serverUrl, message.email, message.password);
@@ -183,9 +202,17 @@ async function handleMessage(message: ExtensionRequest, sender: Browser.Runtime.
         message.ceremonyId,
         message.credential,
         message.rememberDevice,
+        message.rememberUnlock,
       );
     case "LOCK":
       await lock(true);
+      return null;
+    case "SET_AUTO_LOCK":
+      return setAutoLock(message.minutes, runtime);
+    case "SET_REMEMBER_UNLOCK":
+      return setRememberUnlock(message.enabled, runtime);
+    case "LOGOUT":
+      await logout();
       return null;
     case "SYNC":
       requireUnlocked(runtime);
@@ -321,8 +348,9 @@ async function login(
   passwordInput: string,
   secondFactor: string | null,
   rememberDevice: boolean,
+  rememberUnlock: boolean,
 ): Promise<ExtensionState> {
-  await lock(false);
+  await logout();
   const serverUrl = normalizeServerUrl(serverUrlInput);
   const email = emailInput.trim().toLowerCase();
   let password = passwordInput;
@@ -356,6 +384,7 @@ async function login(
       kdf: session.kdf,
       protectedUserKey: session.protectedUserKey,
     };
+    await persistUnlockAndSession(session, serverUrl, email, rememberUnlock, false, runtime);
     if (session.trustedDeviceToken !== null) {
       await trustedDevices.save(serverUrl, email, device.identifier, session.trustedDeviceToken);
     }
@@ -368,6 +397,8 @@ async function login(
     throw error;
   }
   await saveSettings(serverUrl, email);
+  await persistRefreshToken(session, serverUrl);
+  await persistUnlockAndSession(session, serverUrl, email, rememberUnlock, false, runtime);
   await enterVault(runtime, serverUrl, session.accountId);
   return state(runtime);
 }
@@ -379,7 +410,7 @@ async function register(
   passwordInput: string,
 ): Promise<ExtensionState> {
   if (passwordInput.length < 12) throw new Error("Use at least 12 characters for the master password.");
-  await lock(false);
+  await logout();
   const serverUrl = normalizeServerUrl(serverUrlInput);
   const email = emailInput.trim().toLowerCase();
   let password = passwordInput;
@@ -410,6 +441,8 @@ async function register(
     kdf: session.kdf,
     protectedUserKey: session.protectedUserKey,
   };
+  await persistRefreshToken(session, serverUrl);
+  await persistUnlockAndSession(session, serverUrl, email, false, false, runtime);
   await saveSettings(serverUrl, email);
   await enterVault(runtime, serverUrl, session.accountId);
   return state(runtime);
@@ -422,7 +455,7 @@ async function startAccountWebauthn(
   emailInput: string,
   passwordInput: string,
 ): Promise<WebauthnChallengeResponse> {
-  await lock(false);
+  await logout();
   const serverUrl = normalizeServerUrl(serverUrlInput);
   const email = emailInput.trim().toLowerCase();
   let password = passwordInput;
@@ -456,6 +489,7 @@ async function finishAccountWebauthn(
   ceremonyId: string,
   credential: Record<string, unknown>,
   rememberDevice: boolean,
+  rememberUnlock: boolean,
 ): Promise<ExtensionState> {
   const pendingLogin = pendingAccountWebauthn;
   if (
@@ -485,6 +519,8 @@ async function finishAccountWebauthn(
       kdf: session.kdf,
       protectedUserKey: session.protectedUserKey,
     };
+    await persistRefreshToken(session, pendingLogin.serverUrl);
+    await persistUnlockAndSession(session, pendingLogin.serverUrl, pendingLogin.email, rememberUnlock, false, runtime);
     if (session.trustedDeviceToken !== null) {
       await trustedDevices.save(
         pendingLogin.serverUrl,
@@ -499,6 +535,166 @@ async function finishAccountWebauthn(
   } finally {
     pendingAccountWebauthn = null;
   }
+}
+
+async function unlock(
+  runtime: ExtensionVaultRuntime,
+  emailInput: string,
+  passwordInput: string,
+  rememberUnlock: boolean,
+): Promise<ExtensionState> {
+  const session = api.session;
+  if (session === null || settings === null || unlockContext === null) {
+    throw new Error("The extension session is unavailable. Sign in again.");
+  }
+  const email = emailInput.trim().toLowerCase();
+  if (email !== unlockContext.email) throw new Error("Use the email address for this account.");
+  let password = passwordInput;
+  try {
+    runtime.prepareLogin(email, password, JSON.stringify(unlockContext.kdf));
+    password = "";
+    runtime.finishLogin(unlockContext.protectedUserKey);
+    await persistUnlockAndSession(session, settings.serverUrl, email, rememberUnlock, false, runtime);
+    await enterVault(runtime, settings.serverUrl, session.accountId);
+    return state(runtime);
+  } finally {
+    password = "";
+  }
+}
+
+async function persistUnlockAndSession(
+  session: TokenResponse,
+  serverUrl: string,
+  email: string,
+  rememberUnlock: boolean,
+  manualLockSuppressed: boolean,
+  runtime: ExtensionVaultRuntime,
+): Promise<void> {
+  const keyVersion = await keyVersionFor(session.protectedUserKey, session.kdf);
+  if (rememberUnlock) {
+    const key = runtime.exportUserKey();
+    try {
+      await deviceSecrets.saveUnlock(serverUrl, session.accountId, session.deviceId, key, keyVersion);
+    } finally {
+      key.fill(0);
+    }
+  } else {
+    await deviceSecrets.removeUnlock(serverUrl, session.accountId, session.deviceId).catch(() => undefined);
+  }
+  await deviceSecrets.saveSession({
+    serverUrl,
+    email: email.trim().toLowerCase(),
+    accountId: session.accountId,
+    deviceId: session.deviceId,
+    kdf: session.kdf,
+    protectedUserKey: session.protectedUserKey,
+    keyVersion,
+    rememberUnlock,
+    manualLockSuppressed,
+    updatedAt: Date.now(),
+  });
+  rememberedUnlockEnabled = rememberUnlock;
+}
+
+async function persistRefreshToken(session: TokenResponse, serverUrlOverride?: string): Promise<void> {
+  const serverUrl = serverUrlOverride ?? settings?.serverUrl;
+  if (serverUrl === null || serverUrl === undefined) return;
+  await deviceSecrets.saveRefreshToken(serverUrl, session.deviceId, session.refreshToken).catch(() => undefined);
+}
+
+async function restorePersistentSession(): Promise<void> {
+  const runtime = await runtimePromise;
+  await initializeSettings();
+  const record = await deviceSecrets.loadSession().catch(() => null);
+  if (record === null) {
+    await deviceSecrets.clearUnlocks().catch(() => undefined);
+    rememberedUnlockEnabled = false;
+    return;
+  }
+  const refreshToken = await deviceSecrets.loadRefreshToken(record.serverUrl, record.deviceId).catch(() => null);
+  if (refreshToken === null) {
+    await deviceSecrets.removeUnlock(record.serverUrl, record.accountId, record.deviceId).catch(() => undefined);
+    await deviceSecrets.removeSession().catch(() => undefined);
+    rememberedUnlockEnabled = false;
+    return;
+  }
+  try {
+    const session = await api.restoreWithRefreshToken(record.serverUrl, refreshToken);
+    if (session.accountId !== record.accountId || session.deviceId !== record.deviceId) {
+      throw new Error("The remembered session belongs to another account or device.");
+    }
+    const sessionKeyVersion = await keyVersionFor(session.protectedUserKey, session.kdf);
+    const rememberedKeyCurrent = record.keyVersion === undefined || record.keyVersion === sessionKeyVersion;
+    const shouldRememberUnlock = record.rememberUnlock && rememberedKeyCurrent;
+    unlockContext = { email: record.email, kdf: session.kdf, protectedUserKey: session.protectedUserKey };
+    settings = {
+      serverUrl: record.serverUrl,
+      email: record.email,
+      deviceIdentifier: (settings?.deviceIdentifier ?? (await deviceRequest()).identifier),
+      autoLockMinutes: settings?.autoLockMinutes ?? DEFAULT_LOCK_MINUTES,
+    };
+    await persistRefreshToken(session, record.serverUrl);
+    await deviceSecrets.saveSession({
+      ...record,
+      deviceId: session.deviceId,
+      kdf: session.kdf,
+      protectedUserKey: session.protectedUserKey,
+      keyVersion: sessionKeyVersion,
+      rememberUnlock: shouldRememberUnlock,
+      updatedAt: Date.now(),
+    });
+    rememberedUnlockEnabled = shouldRememberUnlock;
+    if (record.rememberUnlock && !rememberedKeyCurrent) {
+      await deviceSecrets.removeUnlock(record.serverUrl, record.accountId, record.deviceId).catch(() => undefined);
+    }
+    if (shouldRememberUnlock && !record.manualLockSuppressed) {
+      const key = await deviceSecrets.loadUnlock(record.serverUrl, record.accountId, session.deviceId, sessionKeyVersion);
+      if (key === null) throw new Error("The remembered device unlock is unavailable.");
+      try {
+        runtime.unlockWithUserKey(key);
+        await deviceSecrets.saveUnlock(record.serverUrl, record.accountId, session.deviceId, key, sessionKeyVersion);
+      } finally { key.fill(0); }
+      await enterVault(runtime, record.serverUrl, record.accountId);
+    }
+  } catch (error) {
+    runtime.lock();
+    api.clearSession();
+    // Only an explicit server rejection invalidates the durable session. Network/server
+    // failures keep encrypted records for a later worker restart; local envelope corruption
+    // removes the unlock envelope but does not require throwing away the server session.
+    const serverRejected = (error instanceof ExtensionApiError && (error.status === 401 || error.status === 403))
+      || (error instanceof Error && error.message.startsWith("The remembered session belongs"));
+    if (serverRejected || !(error instanceof ExtensionApiError)) {
+      await deviceSecrets.removeUnlock(record.serverUrl, record.accountId, record.deviceId).catch(() => undefined);
+    }
+    if (serverRejected) {
+      await deviceSecrets.removeRefreshToken(record.serverUrl, record.deviceId).catch(() => undefined);
+      await deviceSecrets.removeSession().catch(() => undefined);
+      rememberedUnlockEnabled = false;
+    } else if (!(error instanceof ExtensionApiError)) {
+      // A local envelope failure is not a server logout, but the unusable remembered-unlock
+      // preference should be disabled so the next worker restart falls back to password unlock.
+      await deviceSecrets.saveSession({
+        ...record,
+        rememberUnlock: false,
+        manualLockSuppressed: false,
+        updatedAt: Date.now(),
+      }).catch(() => undefined);
+      rememberedUnlockEnabled = false;
+    }
+  }
+}
+
+async function handleSessionLost(): Promise<void> {
+  const record = await deviceSecrets.loadSession().catch(() => null);
+  await lock(false);
+  api.clearSession();
+  if (record !== null) {
+    await deviceSecrets.removeRefreshToken(record.serverUrl, record.deviceId).catch(() => undefined);
+    await deviceSecrets.removeUnlock(record.serverUrl, record.accountId, record.deviceId).catch(() => undefined);
+  }
+  await deviceSecrets.removeSession().catch(() => undefined);
+  rememberedUnlockEnabled = false;
 }
 
 async function enterVault(runtime: ExtensionVaultRuntime, serverUrl: string, accountId: string): Promise<void> {
@@ -783,31 +979,92 @@ async function savePending(runtime: ExtensionVaultRuntime, existingId: string | 
   return parse<VaultItem>(runtime.getItem(id));
 }
 
-async function lock(revoke: boolean): Promise<void> {
+async function lock(manual: boolean): Promise<void> {
   const runtime = await runtimePromise;
-  const logout = revoke && api.session !== null ? api.logout() : Promise.resolve();
   runtime.lock();
-  api.clearSession();
   cache = null;
   cursor = null;
   clearPending();
-  unlockContext = null;
   pendingAccountWebauthn = null;
   for (const requestId of [...passkeyPrompts.keys()]) {
     settlePasskeyPrompt(requestId, { decision: "cancel", itemId: null, credentialId: null });
   }
   await browser.alarms.clear(LOCK_ALARM).catch(() => false);
-  await logout.catch(() => undefined);
+  if (manual) {
+    const record = await deviceSecrets.loadSession().catch(() => null);
+    if (record !== null) await deviceSecrets.saveSession({ ...record, manualLockSuppressed: true, updatedAt: Date.now() }).catch(() => undefined);
+  }
+}
+
+async function setAutoLock(minutes: number | null, runtime: ExtensionVaultRuntime): Promise<ExtensionState> {
+  const normalized = normalizeAutoLock(minutes);
+  const current = await ensureSettings();
+  settings = { ...current, autoLockMinutes: normalized };
+  await browser.storage.local.set({ [SETTINGS_KEY]: settings });
+  if (normalized === null || !runtime.isUnlocked) {
+    await browser.alarms.clear(LOCK_ALARM).catch(() => false);
+  } else {
+    await touch();
+  }
+  return state(runtime);
+}
+
+async function setRememberUnlock(enabled: boolean, runtime: ExtensionVaultRuntime): Promise<ExtensionState> {
+  const session = api.session;
+  const currentSettings = await ensureSettings();
+  const record = await deviceSecrets.loadSession().catch(() => null);
+  if (session === null || record === null || session.accountId !== record.accountId || session.deviceId !== record.deviceId) {
+    throw new Error("The extension session is unavailable. Sign in again.");
+  }
+  if (enabled && !runtime.isUnlocked) {
+    throw new Error("Unlock the vault before enabling remembered unlock.");
+  }
+  await persistUnlockAndSession(session, record.serverUrl || currentSettings.serverUrl, record.email, enabled, false, runtime);
+  return state(runtime);
+}
+
+async function logout(): Promise<void> {
+  const runtime = await runtimePromise;
+  const record = await deviceSecrets.loadSession().catch(() => null);
+  const session = api.session;
+  try {
+    if (session !== null) await api.logout();
+  } finally {
+    runtime.lock();
+    api.clearSession();
+    cache = null;
+    cursor = null;
+    clearPending();
+    unlockContext = null;
+    pendingAccountWebauthn = null;
+    for (const requestId of [...passkeyPrompts.keys()]) {
+      settlePasskeyPrompt(requestId, { decision: "cancel", itemId: null, credentialId: null });
+    }
+    await browser.alarms.clear(LOCK_ALARM).catch(() => false);
+    const serverUrl = record?.serverUrl ?? settings?.serverUrl ?? null;
+    const deviceId = record?.deviceId ?? session?.deviceId ?? null;
+    const accountId = record?.accountId ?? session?.accountId ?? null;
+    if (serverUrl !== null && deviceId !== null) await deviceSecrets.removeRefreshToken(serverUrl, deviceId).catch(() => undefined);
+    if (serverUrl !== null && accountId !== null && deviceId !== null) {
+      await deviceSecrets.removeUnlock(serverUrl, accountId, deviceId).catch(() => undefined);
+    }
+    await deviceSecrets.removeSession().catch(() => undefined);
+    rememberedUnlockEnabled = false;
+  }
 }
 
 function state(runtime: ExtensionVaultRuntime): ExtensionState {
-  const unlocked = runtime.isUnlocked && api.session !== null;
+  const authenticated = api.session !== null;
+  const unlocked = runtime.isUnlocked && authenticated;
   const allItems = unlocked ? parse<ItemSummary[]>(runtime.listItems("", "all")) : [];
   return {
+    authenticated,
     unlocked,
+    autoLockMinutes: settings?.autoLockMinutes ?? DEFAULT_LOCK_MINUTES,
+    rememberUnlock: rememberedUnlockEnabled,
     serverUrl: settings?.serverUrl ?? null,
     email: settings?.email ?? null,
-    accountId: unlocked ? api.accountId : null,
+    accountId: authenticated ? api.accountId : null,
     itemCount: allItems.length,
     pending: unlocked ? pendingSummary() : null,
   };
@@ -818,7 +1075,12 @@ function requireUnlocked(runtime: ExtensionVaultRuntime): void {
 }
 
 async function touch(): Promise<void> {
-  await browser.alarms.create(LOCK_ALARM, { delayInMinutes: LOCK_MINUTES });
+  const minutes = settings?.autoLockMinutes ?? DEFAULT_LOCK_MINUTES;
+  if (minutes === null) {
+    await browser.alarms.clear(LOCK_ALARM).catch(() => false);
+    return;
+  }
+  await browser.alarms.create(LOCK_ALARM, { delayInMinutes: minutes });
 }
 
 async function initializeSettings(): Promise<void> {
@@ -826,14 +1088,22 @@ async function initializeSettings(): Promise<void> {
   const stored = await browser.storage.local.get(SETTINGS_KEY);
   const candidate = stored[SETTINGS_KEY];
   if (isStoredSettings(candidate)) {
-    settings = candidate;
+    settings = {
+      ...candidate,
+      autoLockMinutes: persistedAutoLock(candidate.autoLockMinutes),
+    };
     api.configure(candidate.serverUrl);
   }
 }
 
 async function saveSettings(serverUrl: string, email: string): Promise<void> {
   const current = await ensureSettings();
-  settings = { serverUrl, email, deviceIdentifier: current.deviceIdentifier };
+  settings = {
+    serverUrl,
+    email,
+    deviceIdentifier: current.deviceIdentifier,
+    autoLockMinutes: current.autoLockMinutes ?? DEFAULT_LOCK_MINUTES,
+  };
   api.configure(serverUrl);
   await browser.storage.local.set({ [SETTINGS_KEY]: settings });
 }
@@ -853,6 +1123,20 @@ async function deviceRequest(): Promise<{ identifier: string; name: string; devi
 function optional(value: string | null): string | null {
   const normalized = value?.trim() ?? "";
   return normalized === "" ? null : normalized;
+}
+
+function normalizeAutoLock(value: number | null): AutoLockSetting {
+  if (value === null) return null;
+  if (value === 1 || value === 5 || value === 15 || value === 30 || value === 60 || value === 240) return value;
+  throw new Error("Choose an automatic-lock delay from the available options.");
+}
+
+function persistedAutoLock(value: unknown): AutoLockSetting {
+  if (value === null) return null;
+  if (value === undefined) return DEFAULT_LOCK_MINUTES;
+  return value === 1 || value === 5 || value === 15 || value === 30 || value === 60 || value === 240
+    ? value
+    : DEFAULT_LOCK_MINUTES;
 }
 
 function pendingSummary(): PendingCredentialSummary | null {

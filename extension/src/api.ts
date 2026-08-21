@@ -33,6 +33,7 @@ export class ExtensionApi {
   #session: TokenResponse | null = null;
   #refreshing: Promise<void> | null = null;
   #onSessionLost: (() => void) | null = null;
+  #onSessionChanged: ((session: TokenResponse) => void) | null = null;
 
   get accountId(): string | null {
     return this.#session?.accountId ?? null;
@@ -42,12 +43,20 @@ export class ExtensionApi {
     return this.#session;
   }
 
+  get serverUrl(): string | null {
+    return this.#serverUrl;
+  }
+
   configure(serverUrl: string): void {
     this.#serverUrl = normalizeServerUrl(serverUrl);
   }
 
   setSessionLostHandler(handler: () => void): void {
     this.#onSessionLost = handler;
+  }
+
+  setSessionChangedHandler(handler: (session: TokenResponse) => void): void {
+    this.#onSessionChanged = handler;
   }
 
   clearSession(): void {
@@ -66,6 +75,7 @@ export class ExtensionApi {
   async login(body: string): Promise<TokenResponse> {
     const session = await this.#request<TokenResponse>("/auth/login", "POST", body, false);
     this.#session = session;
+    this.#onSessionChanged?.(session);
     return session;
   }
 
@@ -80,6 +90,20 @@ export class ExtensionApi {
   async finishWebauthnLogin(body: string): Promise<TokenResponse> {
     const session = await this.#request<TokenResponse>("/auth/webauthn/finish", "POST", body, false);
     this.#session = session;
+    this.#onSessionChanged?.(session);
+    return session;
+  }
+
+  async restoreWithRefreshToken(serverUrl: string, refreshToken: string): Promise<TokenResponse> {
+    this.configure(serverUrl);
+    const session = await this.#request<TokenResponse>(
+      "/auth/refresh",
+      "POST",
+      JSON.stringify({ refreshToken }),
+      false,
+    );
+    this.#session = session;
+    this.#onSessionChanged?.(session);
     return session;
   }
 
@@ -171,9 +195,14 @@ export class ExtensionApi {
           false,
         );
         this.#session = session;
+        this.#onSessionChanged?.(session);
       } catch (error) {
-        this.#session = null;
-        this.#onSessionLost?.();
+        // Preserve an in-memory/offline session across transient failures. A local logout is
+        // justified only by an explicit 401/403 from the refresh endpoint.
+        if (error instanceof ExtensionApiError && (error.status === 401 || error.status === 403)) {
+          this.#session = null;
+          this.#onSessionLost?.();
+        }
         throw error;
       } finally {
         this.#refreshing = null;

@@ -83,16 +83,19 @@ compromise and defeats these controls.
 Capabilities: copy local files/storage and perform offline attacks; possibly inspect a
 running unlocked process.
 
-Controls: only encrypted vault records at rest; no persisted master/user key by default;
-automatic lock; desktop refresh/device secrets stored in the OS credential service;
-extension access/refresh tokens and unlocked keys kept only in background memory;
-clipboard clearing; refresh-session revocation; and bounded KDF cost. Chromium service
-worker suspension intentionally loses the extension session and locks it.
+Controls: only encrypted vault records at rest; no persisted master/user key unless the user
+explicitly enables a device envelope; automatic lock; desktop refresh/device secrets stored in
+the OS credential service; Web/extension access tokens kept only in memory; extension refresh
+tokens and optional user-key envelopes encrypted by a non-extractable IndexedDB key; clipboard
+clearing; refresh-session revocation; and bounded KDF cost. Chromium service-worker suspension
+can resume an authenticated extension session only through its encrypted refresh record, and
+manual lock suppresses automatic key restore.
 
 Residual risk: malware, debuggers, accessibility APIs, clipboard managers, swap/core
 dumps, or physical access while unlocked can expose plaintext. Managed-language and
 browser memory cannot be reliably zeroized; lock destroys references and reloads the
-worker/page where possible.
+worker/page where possible. A compromised same-origin Web Vault can invoke its own WebCrypto
+device key, so Web remembered unlock is not equivalent to a hardware-backed installed client.
 
 ### MITM and hostile network
 
