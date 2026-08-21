@@ -308,10 +308,13 @@ jobs:
           api-level: 35
           target: default
           arch: x86_64
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          # Headless hosted Linux runners can lose the SwiftShader color buffer when the
+          # Tauri WebView starts. Keep the emulator CPU-accelerated but disable GPU/Vulkan
+          # rendering so the instrumentation process does not die with EGL_BAD_ACCESS.
+          emulator-options: -no-window -gpu off -feature -Vulkan -no-snapshot -noaudio -no-boot-anim -camera-back none
           # The emulator can report boot completion before the settings service is ready.
           # Let the smoke script wait for package/activity services instead of failing here.
-          disable-animations: false
+          disable-animations: true
           disable-linux-hw-accel: auto
           # Start the host ADB daemon before QEMU boots so the emulator does not race its
           # first settings/input service calls against adb server initialization.
