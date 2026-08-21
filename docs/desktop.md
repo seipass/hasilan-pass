@@ -1,7 +1,8 @@
 # Native desktop client
 
-Status: implemented desktop client with three-OS compile gates and package/signature
-automation. The companion Android client shares this Rust core; see
+Status: implemented desktop client with Linux/Windows compile gates and package/signature
+automation. macOS packaging is outside GitHub Actions. The companion Android client
+shares this Rust core; see
 [Android client](android.md). First protected signed runs and manual device/platform
 smoke remain release gates, 2026-08-13.
 
@@ -117,10 +118,11 @@ disable Rust release optimization and is ignored by non-Linux packaging tools.
 
 The Linux build produces the native binary plus `.deb`, `.rpm`, and `.AppImage` bundles.
 The Tauri configuration also carries Windows `.ico` and macOS `.icns` resources. Normal
-CI compiles the application on Windows and macOS as well as Linux. The protected release
-workflow builds all three platform package sets, requires and verifies native signing and
-notarization on tags, and records unsigned manual runs explicitly. Signing credentials
-are operator/release secrets and are never committed. See
+CI compiles the application on Windows and Linux; macOS is intentionally not scheduled
+by GitHub Actions. The protected release workflow builds the Linux and Windows package
+sets, requires and verifies Windows native signing on tags, and records unsigned manual
+runs explicitly. Signing credentials are operator/release secrets and are never
+committed. See
 [release engineering](releasing.md) for the exact gate and manual smoke checklist.
 
 The PostgreSQL integration journey is opt-in and destructive to the configured test

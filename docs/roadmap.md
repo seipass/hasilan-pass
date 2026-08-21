@@ -64,9 +64,9 @@ new credential while the desktop application is absent.
 - [x] login/unlock/vault/search/edit/generator/TOTP/import/export/sync
 - [x] transactional encrypted offline cache and durable outbox
 - [x] automatic lock, tray, clipboard timeout, OS-keychain device wrapper
-- [ ] signed/packageable builds and platform smoke tests (three-OS compile, packaging,
-  signing, SBOM, and provenance automation exists; first signed tag and manual platform
-  smoke remain)
+- [ ] signed/packageable builds and platform smoke tests (Linux/Windows compile,
+  packaging, signing, SBOM, and provenance automation exists; first signed tag and
+  manual platform smoke remain; macOS is outside GitHub Actions)
 
 Exit gate: desktop syncs the same account and works offline, with no extension dependency
 in either direction.

@@ -45,6 +45,9 @@ android {
         applicationId = "org.hasilan.pass"
         minSdk = 24
         targetSdk = 36
+        // Use the AndroidX runner explicitly so connected instrumentation tests do not
+        // fall back to the legacy platform runner (which reports a crashed 0-test run).
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
     }

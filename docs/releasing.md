@@ -6,26 +6,36 @@ independent security review are still required, 2026-08-13.
 
 ## What the workflows prove
 
-The ordinary `CI` workflow compiles and tests the desktop application on Linux, Windows,
-and macOS. Linux also builds the native executable in the existing full desktop job. The
-two additional platform jobs run the TypeScript tests, native Rust tests, and a complete
-Tauri `--no-bundle` build, then require the expected platform executable to exist.
+The `CI` workflow is tiered to avoid running the same expensive checks for every event:
+
+- pull requests run change-classified Rust, frontend, Linux desktop, Windows native
+  build, PostgreSQL, and security checks; Android PRs compile the emulator ABI and
+  Gradle tests but do not build release ABIs or boot an emulator;
+- implementation-affecting pushes to `main` add the installed-extension E2E journey,
+  Android emulator smoke, Compose backup/restore, and the full platform checks; docs-only
+  pushes keep the lightweight security check;
+- the nightly schedule runs the full main-branch suite plus dependency audits and fuzz
+  smoke; manual dispatch runs the same broad suite.
+
+OS-independent desktop lint, TypeScript tests, and Rust tests are kept in the Linux
+desktop job. The Windows job focuses on the native executable build and expected binary
+check. macOS is intentionally not scheduled by GitHub Actions.
 
 The `Release candidate` workflow has two modes:
 
 - a manual run builds unsigned/ad-hoc packages for packaging smoke tests; its desktop
   metadata says `unsigned-smoke` and it never creates a GitHub Release;
 - a pushed `v*` tag is a publication candidate. It fails unless Windows Authenticode
-  credentials and macOS Developer ID plus notarization credentials are complete. It
-  verifies the resulting native signatures, produces a draft GitHub Release, and never
-  publishes that draft automatically.
+  credentials are complete and the tagged commit has a successful CI run. It verifies
+  the resulting native signatures, produces a draft GitHub Release, and never publishes
+  that draft automatically.
 
-Both modes build Linux `.deb`, `.rpm`, and `.AppImage` packages, a macOS `.dmg`, Windows
-NSIS `.exe` and MSI installers, a signed Android arm64-v8a APK/AAB, the Web Vault,
-Chromium and Firefox extension ZIPs, and an x86-64 GNU/Linux server binary. The server
-binary is built on Ubuntu 22.04 and ships with an `ldd` runtime inventory; Docker Compose
-remains the recommended server delivery path because the container owns its runtime
-dependencies.
+Both modes build Linux `.deb`, `.rpm`, and `.AppImage` packages, Windows NSIS `.exe` and
+MSI installers, a signed Android arm64-v8a APK/AAB, the Web Vault, Chromium and Firefox
+extension ZIPs, and an x86-64 GNU/Linux server binary. macOS packaging is intentionally
+outside this workflow. The server binary is built on Ubuntu 22.04 and ships with an
+`ldd` runtime inventory; Docker Compose remains the recommended server delivery path
+because the container owns its runtime dependencies.
 
 Every build job creates GitHub OIDC/Sigstore SLSA provenance for its exact package
 digests. Assembly generates an SPDX 2.3 JSON SBOM from the clean source plus staged
@@ -38,21 +48,6 @@ Create a GitHub environment named `release`. Require reviewers and restrict it t
 default branch for manual smoke runs plus the intended protected tags. Store signing
 material in that environment, not in repository files, workflow inputs, build logs, or
 local `.env` files.
-
-macOS environment secrets:
-
-- `APPLE_CERTIFICATE`: base64 of the exported Developer ID Application `.p12`;
-- `APPLE_CERTIFICATE_PASSWORD`: the `.p12` export password;
-- `APPLE_SIGNING_IDENTITY`: the exact Keychain identity, normally beginning with
-  `Developer ID Application:`;
-- `APPLE_ID`: the notarization Apple ID;
-- `APPLE_PASSWORD`: an app-specific Apple password;
-- `APPLE_TEAM_ID`: the Apple Developer team ID.
-
-The workflow imports the certificate into a random-password ephemeral keychain, checks
-that the requested identity is present, lets Tauri submit and staple notarization, then
-runs `codesign --verify` and `xcrun stapler validate`. The certificate file and keychain
-are removed even when a later step fails.
 
 Windows environment secrets:
 
@@ -144,13 +139,12 @@ To verify the SPDX assertion rather than the default SLSA predicate, add:
 --bundle metadata/hasilan-pass-0.1.0-sbom-attestation.sigstore.json
 ```
 
-On Windows, independently inspect installers with `Get-AuthenticodeSignature`. On macOS,
-run `codesign --verify --deep --strict` on the app and `xcrun stapler validate` on the
-DMG. A checksum or Sigstore provenance signature does not replace native OS trust.
+On Windows, independently inspect installers with `Get-AuthenticodeSignature`. A
+checksum or Sigstore provenance signature does not replace native OS trust.
 
 ## Manual platform release checklist
 
-Before publishing, use clean supported Windows, macOS, and Linux machines to:
+Before publishing, use clean supported Windows and Linux machines to:
 
 1. install the package and launch the application through the normal OS launcher;
 2. verify the displayed publisher/notarization identity and absence of trust warnings;
