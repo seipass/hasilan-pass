@@ -24,6 +24,9 @@
 /desktop/src-tauri/gen/android/app/src/main/jniLibs/
 *.jks
 *.keystore
+*.pfx
+*.p12
+WINDOWS_CERTIFICATE.base64.txt
 /fuzz/corpus/*/*
 !/fuzz/corpus/bitwarden_import/empty-vault.json
 !/fuzz/corpus/protocol_json/request.json

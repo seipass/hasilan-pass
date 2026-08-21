@@ -25,10 +25,13 @@ The `Release candidate` workflow has two modes:
 
 - a manual run builds unsigned/ad-hoc packages for packaging smoke tests; its desktop
   metadata says `unsigned-smoke` and it never creates a GitHub Release;
-- a pushed `v*` tag is a publication candidate. It fails unless Windows Authenticode
-  credentials are complete and the tagged commit has a successful CI run. It verifies
-  the resulting native signatures, produces a draft GitHub Release, and never publishes
-  that draft automatically.
+- a pushed `v*` tag is a publication candidate. It normally requires complete Windows
+  Authenticode credentials and a successful CI run for the tagged commit. A maintainer
+  may explicitly set `ALLOW_UNSIGNED_WINDOWS_RELEASE=true` in the protected `release`
+  environment to produce a clearly disclosed unsigned Windows candidate; this is a
+  compatibility fallback and is not a trusted Windows distribution. Signed runs verify
+  native signatures, while unsigned runs include `windows-signing-warning.txt`. Both
+  tagged modes produce a draft GitHub Release and never publish that draft automatically.
 
 Both modes build Linux `.deb`, `.rpm`, and `.AppImage` packages, Windows NSIS `.exe` and
 MSI installers, a signed Android arm64-v8a APK/AAB, the Web Vault, Chromium and Firefox
@@ -73,6 +76,17 @@ workflow materializes the keystore only in the runner temporary directory, confi
 Gradle `HP_ANDROID_*` values, builds an arm64-v8a APK and AAB, then verifies both package
 signatures before provenance is recorded. Google Play upload, Play App Signing enrollment,
 and store review remain deliberate maintainer actions.
+
+Optional unsigned Windows fallback:
+
+- `ALLOW_UNSIGNED_WINDOWS_RELEASE`: set the non-secret environment variable to `true`
+  only when deliberately accepting an unsigned Windows package in a tagged candidate;
+  leave it unset for the normal signed release gate.
+
+The workflow also exposes the same opt-in as the `allow_unsigned_windows` boolean for a
+manual run. The opt-in does not disable Android signing, CI identity checks, SBOMs,
+checksums, provenance, or attestations. It only changes the Windows Authenticode gate;
+the resulting Windows metadata and release warning explicitly say `unsigned-smoke`.
 
 Browser-store signing is intentionally separate. Firefox AMO and Chrome Web Store apply
 their own upload/review/signing processes; a locally generated ZIP must not be described

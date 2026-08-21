@@ -2,6 +2,12 @@ name: Release candidate
 
 on:
   workflow_dispatch:
+    inputs:
+      allow_unsigned_windows:
+        description: "Allow an explicitly disclosed unsigned Windows package"
+        required: false
+        default: false
+        type: boolean
   push:
     tags:
       - "v*"
@@ -185,6 +191,7 @@ jobs:
             initial-signing: unsigned-smoke
     env:
       HP_NATIVE_SIGNING: ${{ matrix.initial-signing }}
+      HP_ALLOW_UNSIGNED_WINDOWS: ${{ vars.ALLOW_UNSIGNED_WINDOWS_RELEASE == 'true' || inputs.allow_unsigned_windows == true }}
       NO_STRIP: "1"
     steps:
       - name: Check out source
@@ -224,19 +231,24 @@ jobs:
         shell: pwsh
         env:
           HP_TAG_RELEASE: ${{ needs.prepare.outputs.tag_release }}
+          HP_ALLOW_UNSIGNED_WINDOWS: ${{ vars.ALLOW_UNSIGNED_WINDOWS_RELEASE == 'true' || inputs.allow_unsigned_windows == true }}
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
         run: |
           $credentials = @($env:WINDOWS_CERTIFICATE, $env:WINDOWS_CERTIFICATE_PASSWORD, $env:WINDOWS_TIMESTAMP_URL)
           $present = @($credentials | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+          $allowUnsigned = $env:HP_ALLOW_UNSIGNED_WINDOWS -eq 'true'
           if ($present -ne 0 -and $present -ne $credentials.Count) {
             throw 'Windows signing credentials are only partially configured'
           }
-          if ($env:HP_TAG_RELEASE -eq 'true' -and $present -ne $credentials.Count) {
+          if ($env:HP_TAG_RELEASE -eq 'true' -and $present -ne $credentials.Count -and -not $allowUnsigned) {
             throw 'a tagged release requires Windows Authenticode credentials and a timestamp URL'
           }
           if ($present -eq 0) {
+            if ($env:HP_TAG_RELEASE -eq 'true' -and $allowUnsigned) {
+              Write-Host 'Windows Authenticode signing is explicitly disabled for this tagged release'
+            }
             exit 0
           }
           $timestamp = $null
@@ -348,6 +360,18 @@ jobs:
           "$env:HP_NATIVE_SIGNING"
         shell: pwsh
         if: matrix.platform == 'windows'
+      - name: Record unsigned Windows release disclosure
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          if ($env:HP_NATIVE_SIGNING -ne 'unsigned-smoke') {
+            exit 0
+          }
+          @'
+          WARNING: Windows packages in this candidate are not Authenticode-signed.
+          Windows SmartScreen and enterprise policy may warn or block installation.
+          Verify the release source and checksums before installing.
+          '@ | Set-Content -LiteralPath release/metadata/windows-signing-warning.txt -Encoding utf8
       - name: Collect required Unix platform packages
         env:
           HP_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
@@ -543,6 +567,19 @@ jobs:
           test -f release/metadata/desktop-linux.json
           test -f release/metadata/desktop-windows.json
           test -f release/metadata/android.json
+      - name: Require disclosure for unsigned Windows candidates
+        if: needs.prepare.outputs.tag_release == 'true'
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+
+          const metadata = JSON.parse(
+            await readFile('release/metadata/desktop-windows.json', 'utf8'),
+          );
+          if (metadata.nativeCodeSigning === 'unsigned-smoke') {
+            await readFile('release/metadata/windows-signing-warning.txt', 'utf8');
+          }
+          NODE
       - name: Generate the release SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
