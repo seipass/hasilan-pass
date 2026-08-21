@@ -107,7 +107,6 @@ export function App({ runtime }: AppProps) {
   const cursorRef = useRef<string | null>(null);
   const activityRef = useRef(Date.now());
   const channelRef = useRef<BroadcastChannel | null>(null);
-  const restoreStartedRef = useRef(false);
 
   const clearStoredSession = useCallback(async (expectedSession?: TokenResponse | null): Promise<boolean> => {
     const record = await deviceUnlocks.loadSession().catch(() => null);
@@ -229,16 +228,14 @@ export function App({ runtime }: AppProps) {
   }, [api, clearSessionState, clearStoredSession, lockVault]);
 
   useEffect(() => {
-    if (restoreStartedRef.current) return undefined;
-    restoreStartedRef.current = true;
     let cancelled = false;
     void (async () => {
       const record = await deviceUnlocks.loadSession().catch(() => null);
       if (cancelled || api.session !== null) return;
-      if (record === null) {
-        await deviceUnlocks.clearUnlocks().catch(() => undefined);
-        return;
-      }
+      // An empty record on the first render is normal. Do not clear unlock envelopes here:
+      // registration can save the session concurrently while this initial IndexedDB read is
+      // still in flight. Explicit logout and invalid/revoked records perform the cleanup.
+      if (record === null) return;
       try {
         const session = await api.restoreWebSession(record);
         if (cancelled) return;
@@ -299,7 +296,8 @@ export function App({ runtime }: AppProps) {
     return () => {
       cancelled = true;
     };
-  // Initial session restoration must run once for this runtime instance.
+  // The effect intentionally runs on mount only. A StrictMode development remount must be
+  // allowed to start the second restore attempt after the first attempt is cancelled.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
