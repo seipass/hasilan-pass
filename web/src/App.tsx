@@ -633,24 +633,32 @@ export function App({ runtime }: AppProps) {
       setAuthError("Unlock the vault before enabling remembered unlock.");
       return;
     }
-    if (enabled) {
-      const key = runtime.exportUserKey();
-      try {
-        await deviceUnlocks.saveUnlock(
-          session.accountId,
-          session.deviceId,
-          key,
-          await keyVersionFor(session.protectedUserKey, session.kdf),
-        );
-      } finally {
-        key.fill(0);
-      }
-    } else {
-      await deviceUnlocks.removeUnlock(session.accountId, session.deviceId);
-    }
+    const previous = rememberUnlock;
+    // Reflect the native checkbox immediately. Persistence is asynchronous; if it fails, the
+    // caller displays the error and we restore the previous controlled value below.
     setRememberUnlock(enabled);
-    await persistSessionRecord(email, enabled, false);
-    setNotice(enabled ? "This device will remember the encrypted vault unlock." : "Remembered unlock removed from this device.");
+    try {
+      if (enabled) {
+        const key = runtime.exportUserKey();
+        try {
+          await deviceUnlocks.saveUnlock(
+            session.accountId,
+            session.deviceId,
+            key,
+            await keyVersionFor(session.protectedUserKey, session.kdf),
+          );
+        } finally {
+          key.fill(0);
+        }
+      } else {
+        await deviceUnlocks.removeUnlock(session.accountId, session.deviceId);
+      }
+      await persistSessionRecord(email, enabled, false);
+      setNotice(enabled ? "This device will remember the encrypted vault unlock." : "Remembered unlock removed from this device.");
+    } catch (error) {
+      setRememberUnlock(previous);
+      throw error;
+    }
   }
 
   async function enterVault(session: TokenResponse): Promise<void> {
