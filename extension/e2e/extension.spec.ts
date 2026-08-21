@@ -183,6 +183,9 @@ test("register, enforce hostile-page boundaries, autofill, update, confirm in We
       return state.pending?.username;
     }).toBe("alice-extension");
 
+    await popup.getByRole("button", { name: "Settings" }).click();
+    await popup.getByRole("checkbox", { name: "Remember unlock on this device" }).check();
+    await popup.getByRole("button", { name: "Back" }).click();
     await popup.reload();
     await popup.getByRole("button", { name: "Update Extension E2E" }).click();
     await expect(popup.getByText("Saved password updated.")).toBeVisible();

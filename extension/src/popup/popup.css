@@ -55,6 +55,8 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .popup-form label > span { color: #63747f; font-weight: 500; }
 .popup-form .popup-checkbox { display: flex; align-items: center; gap: 7px; color: #7f909a; font-size: 9px; font-weight: 600; }
 .popup-form .popup-checkbox input { width: 14px; height: 14px; padding: 0; accent-color: var(--accent); }
+.popup-form .popup-checkbox > span { display: grid; gap: 3px; }
+.remember-warning { color: #63747f; font-size: 8px; font-weight: 500; line-height: 1.35; }
 .auth-alternatives { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .auth-alternatives button { min-height: 42px; border: 1px solid #3a4851; border-radius: 9px; padding: 7px 9px; color: #cfd8dd; background: #152129; font-size: 10px; font-weight: 750; line-height: 1.3; cursor: pointer; }
 .auth-alternatives button:hover:not(:disabled) { border-color: #66757e; background: #1d2a33; }

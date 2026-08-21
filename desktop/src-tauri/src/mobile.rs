@@ -93,6 +93,7 @@ struct ClipboardPayload<'a> {
 #[serde(rename_all = "camelCase")]
 struct BiometricKeyPayload<'a> {
     key: &'a str,
+    context: &'a str,
 }
 
 #[derive(Serialize)]
@@ -268,6 +269,19 @@ async fn login(
         .await
         .login(server_url, email, master_password, totp_code, recovery_code)
         .await
+        .map_err(redacted_error)
+}
+
+#[tauri::command]
+async fn unlock_with_password(
+    state: State<'_, MobileState>,
+    master_password: String,
+) -> CommandResult<DesktopStatus> {
+    state
+        .client
+        .lock()
+        .await
+        .unlock_with_password(master_password)
         .map_err(redacted_error)
 }
 
@@ -460,6 +474,27 @@ async fn revoke_account_session(
 #[tauri::command]
 async fn lock(state: State<'_, MobileState>) -> CommandResult<DesktopStatus> {
     Ok(state.client.lock().await.lock())
+}
+
+#[tauri::command]
+async fn unlock_with_device_key(state: State<'_, MobileState>) -> CommandResult<DesktopStatus> {
+    state
+        .client
+        .lock()
+        .await
+        .unlock_with_device_key()
+        .map_err(redacted_error)
+}
+
+#[tauri::command]
+async fn resume_session(state: State<'_, MobileState>) -> CommandResult<DesktopStatus> {
+    state
+        .client
+        .lock()
+        .await
+        .resume_session()
+        .await
+        .map_err(redacted_error)
 }
 
 #[tauri::command]
@@ -808,6 +843,19 @@ async fn set_auto_lock_minutes(
 }
 
 #[tauri::command]
+async fn set_remember_unlock(
+    state: State<'_, MobileState>,
+    enabled: bool,
+) -> CommandResult<DesktopStatus> {
+    state
+        .client
+        .lock()
+        .await
+        .set_remember_unlock(enabled)
+        .map_err(redacted_error)
+}
+
+#[tauri::command]
 async fn copy_secret(security: State<'_, AndroidSecurity>, mut value: String) -> CommandResult<()> {
     if value.len() > 1_000_000 {
         value.zeroize();
@@ -850,18 +898,22 @@ async fn enable_biometric_unlock(
     state: State<'_, MobileState>,
     security: State<'_, AndroidSecurity>,
 ) -> CommandResult<BiometricStatus> {
-    let mut key = state
-        .client
-        .lock()
-        .await
-        .biometric_unlock_key()
-        .map_err(redacted_error)?;
+    let (mut key, context) = {
+        let mut client = state.client.lock().await;
+        (
+            client.biometric_unlock_key().map_err(redacted_error)?,
+            client.biometric_unlock_context().map_err(redacted_error)?,
+        )
+    };
     let encoded = STANDARD.encode(key);
     key.zeroize();
     let result = security
         .run_async(
             "enableBiometricUnlock",
-            BiometricKeyPayload { key: &encoded },
+            BiometricKeyPayload {
+                key: &encoded,
+                context: &context,
+            },
         )
         .await;
     let mut encoded = encoded;
@@ -956,6 +1008,7 @@ pub fn run() {
             status,
             register,
             login,
+            unlock_with_password,
             login_with_account_passkey,
             account_security,
             start_account_totp_setup,
@@ -988,6 +1041,9 @@ pub fn run() {
             resolve_conflict,
             select_profile,
             set_auto_lock_minutes,
+            set_remember_unlock,
+            unlock_with_device_key,
+            resume_session,
             copy_secret,
             clipboard_policy,
             set_clipboard_policy,
@@ -1090,7 +1146,7 @@ fn lock_all_android_clients() {
     }
     tauri::async_runtime::block_on(async move {
         for client in clients {
-            client.lock().await.lock();
+            client.lock().await.lock_for_background();
         }
     });
 }
@@ -1140,6 +1196,34 @@ fn unlock(env: JNIEnv<'_>, _class: JClass<'_>, key: JByteArray<'_>) -> jboolean 
     });
     bytes.zeroize();
     u8::from(result) as jboolean
+}
+
+tauri::tao::platform::android::prelude::android_fn!(
+    org_hasilan,
+    pass,
+    AutofillNative,
+    unlockContext,
+    [],
+    jstring
+);
+
+/// Returns only the active profile's non-secret biometric envelope context. Android uses this to
+/// authenticate the Keystore envelope before releasing its user key to Rust.
+fn unlockContext(mut env: JNIEnv<'_>, _class: JClass<'_>) -> jstring {
+    let context = system_client().and_then(|client| {
+        tauri::async_runtime::block_on(async {
+            client
+                .lock()
+                .await
+                .biometric_unlock_context()
+                .map_err(|_| ())
+        })
+    });
+    context
+        .ok()
+        .and_then(|value| env.new_string(value).ok())
+        .map(JString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
 }
 
 tauri::tao::platform::android::prelude::android_fn!(

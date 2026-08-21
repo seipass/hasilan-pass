@@ -1,5 +1,28 @@
 import { expect, test, type Page } from "@playwright/test";
 
+test("restores an encrypted remembered unlock after a page reload", async ({ page }) => {
+  const unique = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+  const email = `remembered-${unique}@example.test`;
+  const masterPassword = `remembered master password ${unique}!`;
+
+  await registerPage(page, email, masterPassword);
+  await page.getByRole("checkbox").check();
+  await page.getByRole("button", { name: "New login" }).click();
+  await page.getByLabel("Name", { exact: true }).fill("Remembered login");
+  await page.getByLabel("Username").fill("remembered-user");
+  await page.locator('.dialog-card input[name="password"]').fill("remembered-secret");
+  await page.getByRole("button", { name: "Encrypt and save" }).click();
+  await expect(page.getByRole("button", { name: /Remembered login/u })).toBeVisible();
+
+  await page.reload();
+
+  await expect(page.getByRole("heading", { name: "All items" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Remembered login/u })).toBeVisible();
+  await page.getByRole("button", { name: /Remembered login/u }).click();
+  await page.getByRole("button", { name: "Reveal" }).click();
+  await expect(page.locator(".secret-value")).toHaveText("remembered-secret");
+});
+
 test("register, encrypt, sync, relogin, edit, and trash a credential", async ({ page }) => {
   const unique = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
   const email = `e2e-${unique}@example.test`;

@@ -173,7 +173,10 @@ export interface PendingCredentialSummary {
 }
 
 export interface ExtensionState {
+  authenticated: boolean;
   unlocked: boolean;
+  autoLockMinutes: number | null;
+  rememberUnlock: boolean;
   serverUrl: string | null;
   email: string | null;
   accountId: string | null;

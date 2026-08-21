@@ -321,6 +321,29 @@ impl VaultRuntime {
             .map_err(js_error)
     }
 
+    /// Installs a 64-byte user key that was decrypted by a device-bound
+    /// storage layer. The caller must clear the input buffer immediately after
+    /// this call; the runtime owns the zeroizing key in WebAssembly memory.
+    #[wasm_bindgen(js_name = unlockWithUserKey)]
+    pub fn unlock_with_user_key(&mut self, key: &[u8]) -> Result<(), JsValue> {
+        self.lock();
+        self.user_key =
+            Some(CompositeKey::from_slice(key).map_err(|_| js_error(RuntimeError::InvalidInput))?);
+        Ok(())
+    }
+
+    /// Returns a transient copy for an explicitly opted-in device wrapping
+    /// operation. Clients must encrypt it immediately and zero the returned
+    /// buffer; it is never persisted by the runtime.
+    #[wasm_bindgen(js_name = exportUserKey)]
+    pub fn export_user_key(&self) -> Result<Vec<u8>, JsValue> {
+        Ok(self
+            .require_unlocked()
+            .map_err(js_error)?
+            .as_bytes()
+            .to_vec())
+    }
+
     /// Locally verifies a master password against the already-unlocked user key.
     ///
     /// The protected user key and password remain inside this call; no server request is made.

@@ -67,10 +67,43 @@ export function DesktopApp() {
   const editorHistoryEntry = useRef(false);
   const dismissingEditorFromBack = useRef(false);
 
+  async function restoreForegroundState(): Promise<void> {
+    let current = await desktop.status();
+    if (!current.unlocked && current.serverUrl !== null && current.email !== null) {
+      // A process restart has no access token, while a background/foreground cycle keeps the
+      // in-memory session. Resume only when needed; transient network errors must not look like
+      // a logout because the encrypted local vault can still be opened offline.
+      if (!current.online) {
+        try {
+          current = await desktop.resumeSession();
+        } catch {
+          current = await desktop.status().catch(() => current);
+        }
+      }
+      if (current.rememberUnlock && !current.unlocked) {
+        try {
+          current = await desktop.unlockWithDeviceKey();
+          setView("vault");
+          await refreshItems("", "all");
+        } catch {
+          // Explicit manual lock, a missing envelope, or a revoked session stays locked.
+          current = await desktop.status().catch(() => current);
+        }
+      }
+    }
+    setStatus(current);
+    if (!current.unlocked) {
+      setItems([]);
+      setOrganizationCatalog(emptyOrganizationCatalog);
+      setSelected(null);
+      setEditor(undefined);
+    }
+  }
+
   useEffect(() => {
-    void desktop.status().then(setStatus).catch((caught) => setError(message(caught)));
+    void restoreForegroundState().catch((caught) => setError(message(caught)));
     const unlisten = listen("vault-locked", () => {
-      setStatus((current) => current === null ? null : { ...current, unlocked: false, online: false, itemCount: 0 });
+      setStatus((current) => current === null ? null : { ...current, unlocked: false, itemCount: 0 });
       setItems([]);
       setOrganizationCatalog(emptyOrganizationCatalog);
       setSelected(null);
@@ -88,20 +121,16 @@ export function DesktopApp() {
   useEffect(() => {
     const refreshAfterForeground = () => {
       if (document.visibilityState !== "visible") return;
-      // Android clears the native coordinator while backgrounded. Refresh before rendering a
-      // previously-visible vault screen so stale decrypted UI state cannot survive a resume.
-      void desktop.status().then((next) => {
-        setStatus(next);
-        if (!next.unlocked) {
-          setItems([]);
-          setOrganizationCatalog(emptyOrganizationCatalog);
-          setSelected(null);
-          setEditor(undefined);
-        }
-      }).catch(() => undefined);
+      // Android clears the native coordinator while backgrounded. Re-establish the authenticated
+      // session and, when explicitly enabled, restore the encrypted device envelope on resume.
+      void restoreForegroundState().catch(() => undefined);
     };
     document.addEventListener("visibilitychange", refreshAfterForeground);
-    return () => document.removeEventListener("visibilitychange", refreshAfterForeground);
+    window.addEventListener("focus", refreshAfterForeground);
+    return () => {
+      document.removeEventListener("visibilitychange", refreshAfterForeground);
+      window.removeEventListener("focus", refreshAfterForeground);
+    };
   }, []);
 
   useEffect(() => {
@@ -208,6 +237,16 @@ export function DesktopApp() {
         if (!stillVisible && search !== "") setSelected(null);
       }
     } catch (caught) {
+      const next = await desktop.status().catch(() => null);
+      if (next !== null) {
+        setStatus(next);
+        if (!next.unlocked) {
+          setItems([]);
+          setOrganizationCatalog(emptyOrganizationCatalog);
+          setSelected(null);
+          setEditor(undefined);
+        }
+      }
       setError(message(caught));
     }
   }
@@ -232,13 +271,15 @@ export function DesktopApp() {
     try {
       const next = authMode === "register"
         ? await desktop.register(serverUrl, email, masterPassword)
-        : await desktop.login(
-          serverUrl,
-          email,
-          masterPassword,
-          optional(field(data, "totpCode")),
-          optional(field(data, "recoveryCode")),
-        );
+        : status?.email !== null && status?.email !== undefined
+          ? await desktop.unlockWithPassword(masterPassword)
+          : await desktop.login(
+            serverUrl,
+            email,
+            masterPassword,
+            optional(field(data, "totpCode")),
+            optional(field(data, "recoveryCode")),
+          );
       masterPassword = "";
       setStatus(next);
       setQuery("");
@@ -301,6 +342,16 @@ export function DesktopApp() {
       await refreshOrganizationCatalog();
       setNotice(next.online ? "Encrypted changes synchronized." : "Offline. Local encrypted changes remain queued.");
     } catch (caught) {
+      const next = await desktop.status().catch(() => null);
+      if (next !== null) {
+        setStatus(next);
+        if (!next.unlocked) {
+          setItems([]);
+          setOrganizationCatalog(emptyOrganizationCatalog);
+          setSelected(null);
+          setEditor(undefined);
+        }
+      }
       setError(message(caught));
     } finally {
       setBusy(false);
@@ -309,11 +360,24 @@ export function DesktopApp() {
 
   async function lockVault(): Promise<void> {
     const next = await desktop.lock().catch(() => null);
-    setStatus(next ?? (status === null ? null : { ...status, unlocked: false, online: false, itemCount: 0 }));
+    setStatus(next ?? (status === null ? null : { ...status, unlocked: false, itemCount: 0 }));
     setItems([]);
     setOrganizationCatalog(emptyOrganizationCatalog);
     setSelected(null);
     setEditor(undefined);
+  }
+
+  async function refreshAfterLogoutFailure(caught: unknown): Promise<void> {
+    // The native layer clears local session/vault state even when the remote revoke request
+    // fails. Refresh the UI from that authoritative state instead of leaving decrypted rows
+    // or a stale authenticated screen visible.
+    const next = await desktop.status().catch(() => null);
+    if (next !== null) setStatus(next);
+    setItems([]);
+    setOrganizationCatalog(emptyOrganizationCatalog);
+    setSelected(null);
+    setEditor(undefined);
+    setError(message(caught));
   }
 
   async function saveLogin(draft: LoginDraft): Promise<void> {
@@ -460,6 +524,9 @@ export function DesktopApp() {
         mode={authMode}
         onAuthenticate={authenticate}
         onAccountPasskey={authenticateWithAccountPasskey}
+        onLogout={async () => {
+          try { setStatus(await desktop.logout()); } catch (caught) { await refreshAfterLogoutFailure(caught); }
+        }}
         onMode={setAuthMode}
         onSelectProfile={async (scope) => {
           try { setStatus(await desktop.selectProfile(scope)); } catch (caught) { setError(message(caught)); }
@@ -514,7 +581,7 @@ export function DesktopApp() {
           />
         ) : null}
         {view === "generator" ? <Generator onCopy={(value) => void copy(value)} onUse={(value) => { setGeneratedPassword(value); setEditorKind("login"); setEditor(null); }} /> : null}
-        {view === "settings" ? <Settings catalog={organizationCatalog} onRefresh={() => { void refreshOrganizationCatalog(); void refreshItems(query, category); }} status={status} setError={setError} setNotice={setNotice} setStatus={setStatus} /> : null}
+        {view === "settings" ? <Settings catalog={organizationCatalog} onLogoutFailure={refreshAfterLogoutFailure} onRefresh={() => { void refreshOrganizationCatalog(); void refreshItems(query, category); }} status={status} setError={setError} setNotice={setNotice} setStatus={setStatus} /> : null}
         {view === "conflicts" ? <Conflicts onRefresh={() => void refreshItems(query, category)} setError={setError} setStatus={setStatus} /> : null}
       </main>
       <BottomNav
@@ -530,7 +597,7 @@ export function DesktopApp() {
   );
 }
 
-function AuthScreen({ status, mode, busy, error, onMode, onAuthenticate, onAccountPasskey, onSelectProfile }: {
+function AuthScreen({ status, mode, busy, error, onMode, onAuthenticate, onAccountPasskey, onLogout, onSelectProfile }: {
   status: DesktopStatus;
   mode: AuthMode;
   busy: boolean;
@@ -538,9 +605,11 @@ function AuthScreen({ status, mode, busy, error, onMode, onAuthenticate, onAccou
   onMode: (mode: AuthMode) => void;
   onAuthenticate: (event: FormEvent<HTMLFormElement>) => void;
   onAccountPasskey: (form: HTMLFormElement) => void;
+  onLogout: () => void;
   onSelectProfile: (scope: string) => void;
 }) {
   const isAndroid = /Android/i.test(navigator.userAgent);
+  const hasCachedProfile = status.email !== null;
   return (
     <main className="auth-screen">
       <section className="auth-story">
@@ -551,23 +620,24 @@ function AuthScreen({ status, mode, busy, error, onMode, onAuthenticate, onAccou
       <section className="auth-panel">
         <div className="auth-card">
           <span className="section-kicker">DESKTOP CLIENT</span>
-          <h2>{mode === "register" ? "Create encrypted vault" : status.email === null ? "Unlock your vault" : "Welcome back"}</h2>
-          <p>{status.email === null ? "Connect directly to your Hasilan Pass server." : `Cached ciphertext is ready for ${status.email}.`}</p>
+          <h2>{mode === "register" ? "Create encrypted vault" : hasCachedProfile ? "Unlock your vault" : "Sign in to your vault"}</h2>
+          <p>{hasCachedProfile ? `Unlock the cached ciphertext for ${status.email} without signing out.` : "Connect directly to your Hasilan Pass server."}</p>
           <div className="segmented" role="tablist">
             <button aria-selected={mode === "login"} className={mode === "login" ? "active" : ""} onClick={() => onMode("login")} role="tab" type="button">Unlock</button>
             <button aria-selected={mode === "register"} className={mode === "register" ? "active" : ""} onClick={() => onMode("register")} role="tab" type="button">Create</button>
           </div>
           <form className="stack-form" onSubmit={onAuthenticate}>
-            <label>Server URL<input defaultValue={status.serverUrl ?? "http://127.0.0.1:8080"} name="serverUrl" required spellCheck={false} type="url" /></label>
-            <label>Email<input autoComplete="username" defaultValue={status.email ?? ""} name="email" required type="email" /></label>
+            <label>Server URL<input defaultValue={status.serverUrl ?? "http://127.0.0.1:8080"} disabled={hasCachedProfile} name="serverUrl" required spellCheck={false} type="url" /></label>
+            <label>Email<input autoComplete="username" defaultValue={status.email ?? ""} disabled={hasCachedProfile} name="email" required type="email" /></label>
             <label>Master password<input autoComplete={mode === "register" ? "new-password" : "current-password"} minLength={mode === "register" ? 12 : undefined} name="masterPassword" required type="password" /></label>
-            {mode === "login" ? <><label>Two-step code <span>if enabled</span><input autoComplete="one-time-code" inputMode="numeric" name="totpCode" /></label><label>Recovery code <span>use instead of the two-step code</span><input autoComplete="one-time-code" name="recoveryCode" /></label></> : null}
+            {mode === "login" && !hasCachedProfile ? <><label>Two-step code <span>if enabled</span><input autoComplete="one-time-code" inputMode="numeric" name="totpCode" /></label><label>Recovery code <span>use instead of the two-step code</span><input autoComplete="one-time-code" name="recoveryCode" /></label></> : null}
             {error === null ? null : <p className="form-error" role="alert">{error}</p>}
             <button className="primary large" disabled={busy} type="submit">{busy ? "Deriving keys locally…" : mode === "register" ? "Create vault" : "Unlock vault"}</button>
-            {!isAndroid || mode !== "login" ? null : <button disabled={busy} onClick={(event) => onAccountPasskey(event.currentTarget.form!)} type="button">Use account passkey</button>}
+            {!isAndroid || mode !== "login" || hasCachedProfile ? null : <button disabled={busy} onClick={(event) => onAccountPasskey(event.currentTarget.form!)} type="button">Use account passkey</button>}
           </form>
           <div className="auth-foot"><span className="shield">◆</span><p>The master password is consumed by the native Rust process. It is never transmitted or stored.</p></div>
           {status.profiles.length > 1 ? <div className="profiles"><span>Other cached accounts</span>{status.profiles.filter((profile) => !profile.active).map((profile) => <button key={profile.scope} onClick={() => onSelectProfile(profile.scope)} type="button"><strong>{profile.email}</strong><small>{profile.serverUrl}</small></button>)}</div> : null}
+          {hasCachedProfile && mode === "login" ? <button className="danger" onClick={onLogout} type="button">Log out and remove this device session</button> : null}
         </div>
       </section>
     </main>
@@ -784,7 +854,7 @@ function Generator({ onCopy, onUse }: { onCopy: (value: string) => void; onUse: 
   return <section className="tool-page"><header><span className="eyebrow">CSPRNG · SHARED RUST CORE</span><h1>Password generator</h1><p>Generate locally. Nothing leaves this process until you choose to save it.</p></header><div className="generator-grid"><section className="generator-output"><span>GENERATED SECRET</span><code>{generated || "Generating…"}</code><div><button onClick={() => generated !== "" && onCopy(generated)} type="button">Copy</button><button className="primary" onClick={() => generated !== "" && onUse(generated)} type="button">Use in new login</button></div></section><section className="generator-controls"><div className="segmented"><button className={mode === "password" ? "active" : ""} onClick={() => setMode("password")} type="button">Password</button><button className={mode === "passphrase" ? "active" : ""} onClick={() => setMode("passphrase")} type="button">Passphrase</button></div>{mode === "password" ? <><Range label="Length" max={128} min={8} onChange={(length) => setPassword({ ...password, length })} value={password.length} /><Toggle checked={password.uppercase} label="Uppercase letters" onChange={(uppercase) => setPassword({ ...password, uppercase })} /><Toggle checked={password.lowercase} label="Lowercase letters" onChange={(lowercase) => setPassword({ ...password, lowercase })} /><Toggle checked={password.numbers} label="Numbers" onChange={(numbers) => setPassword({ ...password, numbers, minimumNumbers: numbers ? Math.max(1, password.minimumNumbers) : 0 })} /><Toggle checked={password.symbols} label="Symbols" onChange={(symbols) => setPassword({ ...password, symbols, minimumSymbols: symbols ? Math.max(1, password.minimumSymbols) : 0 })} /><Toggle checked={password.excludeAmbiguous} label="Exclude ambiguous characters" onChange={(excludeAmbiguous) => setPassword({ ...password, excludeAmbiguous })} /></> : <><Range label="Word count" max={12} min={3} onChange={(wordCount) => setPassphrase({ ...passphrase, wordCount })} value={passphrase.wordCount} /><label className="control-field">Separator<input maxLength={8} onChange={(event) => setPassphrase({ ...passphrase, separator: event.target.value })} value={passphrase.separator} /></label><Toggle checked={passphrase.capitalize} label="Capitalize words" onChange={(capitalize) => setPassphrase({ ...passphrase, capitalize })} /><Toggle checked={passphrase.includeNumber} label="Insert a number" onChange={(includeNumber) => setPassphrase({ ...passphrase, includeNumber })} /></>} {error === null ? null : <p className="form-error">{error}</p>}<button className="primary full" onClick={() => void generate()} type="button">Generate securely</button></section></div></section>;
 }
 
-function Settings({ catalog, onRefresh, status, setStatus, setNotice, setError }: { catalog: OrganizationCatalog; onRefresh: () => void; status: DesktopStatus; setStatus: (status: DesktopStatus) => void; setNotice: (message: string | null) => void; setError: (message: string | null) => void }) {
+function Settings({ catalog, onLogoutFailure, onRefresh, status, setStatus, setNotice, setError }: { catalog: OrganizationCatalog; onLogoutFailure: (caught: unknown) => Promise<void>; onRefresh: () => void; status: DesktopStatus; setStatus: (status: DesktopStatus) => void; setNotice: (message: string | null) => void; setError: (message: string | null) => void }) {
   const [minutes, setMinutes] = useState(status.autoLockMinutes);
   const [biometric, setBiometric] = useState<BiometricStatus | null>(null);
   const [clipboard, setClipboard] = useState<ClipboardPolicy | null>(null);
@@ -814,7 +884,7 @@ function Settings({ catalog, onRefresh, status, setStatus, setNotice, setError }
     : biometric?.storageHardwareBacked || biometric?.biometricHardwareBacked
       ? "Hardware-backed Keystore key available."
       : "Keystore hardware protection is unavailable or has not been created yet.";
-  return <section className="tool-page settings-page"><header><span className="eyebrow">DEVICE + ACCOUNT</span><h1>Settings</h1><p>Controls here affect this device and its encrypted ciphertext cache.</p></header><div className="settings-grid"><SettingsCard title="Security"><div className="setting-line"><div><strong>Automatic lock</strong><small>Clear keys and decrypted items after inactivity</small></div><select aria-label="Automatic lock delay" onChange={(event) => setMinutes(Number(event.target.value))} value={minutes}><option value="1">1 minute</option><option value="5">5 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">1 hour</option><option value="240">4 hours</option></select></div><button onClick={async () => { try { setStatus(await desktop.setAutoLock(minutes)); setNotice("Automatic lock updated."); } catch (caught) { setError(message(caught)); } }} type="button">Save lock policy</button>{!isAndroid ? null : <><div className="setting-line"><div><strong>Biometric unlock</strong><small>{biometric?.available ? "Required before Android Autofill or passkeys can read the offline vault." : "A Class 3 biometric must be enrolled on this device."}</small></div><button disabled={!biometric?.available} onClick={() => void updateBiometric(!biometric?.enabled)} type="button">{biometric?.enabled ? "Disable" : "Enable"}</button></div><p className="muted">{hardware}</p><div className="setting-line"><div><strong>Clipboard clearing</strong><small>Clear Hasilan Pass copies when they are still unchanged.</small></div><select aria-label="Clipboard clear delay" onChange={(event) => void updateClipboard(Number(event.target.value))} value={clipboard?.clearAfterSeconds ?? 30}><option value="15">15 seconds</option><option value="30">30 seconds</option><option value="60">1 minute</option><option value="120">2 minutes</option><option value="0">Never clear automatically</option></select></div></>}<div className="security-note"><i>◆</i><p>Refresh and device secrets use the OS credential store. Vault keys remain memory-only; the disk cache contains ciphertext.</p></div></SettingsCard><FolderManager catalog={catalog} onError={setError} onNotice={setNotice} onRefresh={onRefresh} onStatus={setStatus} />{!isAndroid ? <SettingsCard title="Import and export"><p className="muted">Bitwarden plaintext JSON is processed locally by the shared Rust compatibility crate.</p><div className="button-row"><button onClick={async () => { if (!window.confirm("The selected Bitwarden JSON may contain plaintext secrets. Continue with local import?")) return; try { const result = await desktop.importBitwarden(); if (result !== null) { onRefresh(); setNotice(`Imported ${result.itemCount} items. Encrypted uploads are queued.`); } } catch (caught) { setError(message(caught)); } }} type="button">Import JSON</button><button className="danger" onClick={async () => { if (!window.confirm("This creates a PLAINTEXT export containing every decrypted vault secret. Store it securely and delete it when finished. Continue?")) return; try { const path = await desktop.exportBitwarden(); if (path !== null) setNotice(`Plaintext export written to ${path}`); } catch (caught) { setError(message(caught)); } }} type="button">Export plaintext JSON</button></div></SettingsCard> : <SettingsCard title="Android services"><p className="muted">Enable both services in Android settings. Each fill, save, and passkey action requires a fresh biometric verification.</p><div className="button-row"><button onClick={() => void desktop.openAutofillSettings().catch((caught) => setError(message(caught)))} type="button">Open Autofill settings</button><button disabled={biometric?.enabled !== true} onClick={() => void desktop.openCredentialProviderSettings().catch((caught) => setError(message(caught)))} type="button">Open passkey settings</button></div></SettingsCard>}<SettingsCard title="Account"><div className="account-card"><span className={status.online ? "status-dot online" : "status-dot"} /><div><strong>{status.email}</strong><small>{status.serverUrl}</small></div></div><p className="muted">Last encrypted sync: {status.lastSyncAt === null ? "Not yet" : formatDate(status.lastSyncAt)}</p><button className="danger" onClick={async () => { if (!window.confirm("Revoke this device session and lock the vault?")) return; try { setStatus(await desktop.logout()); } catch (caught) { setError(message(caught)); } }} type="button">Revoke session and lock</button></SettingsCard>{status.profiles.length > 1 ? <SettingsCard title="Cached accounts">{status.profiles.map((profile) => <button className="profile-row" disabled={profile.active} key={profile.scope} onClick={async () => { try { setStatus(await desktop.selectProfile(profile.scope)); } catch (caught) { setError(message(caught)); } }} type="button"><div><strong>{profile.email}</strong><small>{profile.serverUrl}</small></div><span>{profile.active ? "Current" : "Switch"}</span></button>)}</SettingsCard> : null}{!isAndroid ? null : <AndroidAccountSecurity onError={(next) => setError(next)} onNotice={(next) => setNotice(next)} onStatus={setStatus} />}</div></section>;
+  return <section className="tool-page settings-page"><header><span className="eyebrow">DEVICE + ACCOUNT</span><h1>Settings</h1><p>Controls here affect this device and its encrypted ciphertext cache.</p></header><div className="settings-grid"><SettingsCard title="Security"><div className="setting-line"><div><strong>Automatic lock</strong><small>Clear keys and decrypted items after inactivity</small></div><select aria-label="Automatic lock delay" onChange={(event) => setMinutes(Number(event.target.value))} value={minutes}><option value="0">Never</option><option value="1">1 minute</option><option value="5">5 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">1 hour</option><option value="240">4 hours</option></select></div><button onClick={async () => { try { setStatus(await desktop.setAutoLock(minutes)); setNotice("Automatic lock updated."); } catch (caught) { setError(message(caught)); } }} type="button">Save lock policy</button><div className="setting-line"><div><strong>Remember unlock on this device</strong><small>Wrap the vault key in OS secure storage for optional restart unlock. Manual lock suppresses this until you unlock with your password. Device access can unlock the vault; memory-only mode is stronger.</small></div><input aria-label="Remember unlock on this device" checked={status.rememberUnlock} onChange={(event) => void desktop.setRememberUnlock(event.currentTarget.checked).then(setStatus, (caught) => setError(message(caught)))} type="checkbox" /></div>{!isAndroid ? null : <><div className="setting-line"><div><strong>Biometric unlock</strong><small>{biometric?.available ? "Required before Android Autofill or passkeys can read the offline vault." : "A Class 3 biometric must be enrolled on this device."}</small></div><button disabled={!biometric?.available} onClick={() => void updateBiometric(!biometric?.enabled)} type="button">{biometric?.enabled ? "Disable" : "Enable"}</button></div><p className="muted">{hardware}</p><div className="setting-line"><div><strong>Clipboard clearing</strong><small>Clear Hasilan Pass copies when they are still unchanged.</small></div><select aria-label="Clipboard clear delay" onChange={(event) => void updateClipboard(Number(event.target.value))} value={clipboard?.clearAfterSeconds ?? 30}><option value="15">15 seconds</option><option value="30">30 seconds</option><option value="60">1 minute</option><option value="120">2 minutes</option><option value="0">Never clear automatically</option></select></div></>}<div className="security-note"><i>◆</i><p>Refresh and device secrets use the OS credential store. Vault keys remain memory-only; the disk cache contains ciphertext.</p></div></SettingsCard><FolderManager catalog={catalog} onError={setError} onNotice={setNotice} onRefresh={onRefresh} onStatus={setStatus} />{!isAndroid ? <SettingsCard title="Import and export"><p className="muted">Bitwarden plaintext JSON is processed locally by the shared Rust compatibility crate.</p><div className="button-row"><button onClick={async () => { if (!window.confirm("The selected Bitwarden JSON may contain plaintext secrets. Continue with local import?")) return; try { const result = await desktop.importBitwarden(); if (result !== null) { onRefresh(); setNotice(`Imported ${result.itemCount} items. Encrypted uploads are queued.`); } } catch (caught) { setError(message(caught)); } }} type="button">Import JSON</button><button className="danger" onClick={async () => { if (!window.confirm("This creates a PLAINTEXT export containing every decrypted vault secret. Store it securely and delete it when finished?")) return; try { const path = await desktop.exportBitwarden(); if (path !== null) setNotice(`Plaintext export written to ${path}`); } catch (caught) { setError(message(caught)); } }} type="button">Export plaintext JSON</button></div></SettingsCard> : <SettingsCard title="Android services"><p className="muted">Enable both services in Android settings. Each fill, save, and passkey action requires a fresh biometric verification.</p><div className="button-row"><button onClick={() => void desktop.openAutofillSettings().catch((caught) => setError(message(caught)))} type="button">Open Autofill settings</button><button disabled={biometric?.enabled !== true} onClick={() => void desktop.openCredentialProviderSettings().catch((caught) => setError(message(caught)))} type="button">Open passkey settings</button></div></SettingsCard>}<SettingsCard title="Account"><div className="account-card"><span className={status.online ? "status-dot online" : "status-dot"} /><div><strong>{status.email}</strong><small>{status.serverUrl}</small></div></div><p className="muted">Last encrypted sync: {status.lastSyncAt === null ? "Not yet" : formatDate(status.lastSyncAt)}</p><button className="danger" onClick={async () => { if (!window.confirm("Revoke this device session and lock the vault?")) return; try { setStatus(await desktop.logout()); } catch (caught) { await onLogoutFailure(caught); } }} type="button">Revoke session and lock</button></SettingsCard>{status.profiles.length > 1 ? <SettingsCard title="Cached accounts">{status.profiles.map((profile) => <button className="profile-row" disabled={profile.active} key={profile.scope} onClick={async () => { try { setStatus(await desktop.selectProfile(profile.scope)); } catch (caught) { setError(message(caught)); } }} type="button"><div><strong>{profile.email}</strong><small>{profile.serverUrl}</small></div><span>{profile.active ? "Current" : "Switch"}</span></button>)}</SettingsCard> : null}{!isAndroid ? null : <AndroidAccountSecurity onError={(next) => setError(next)} onNotice={(next) => setNotice(next)} onStatus={setStatus} />}</div></section>;
 }
 
 function FolderManager({ catalog, onRefresh, onStatus, onNotice, onError }: { catalog: OrganizationCatalog; onRefresh: () => void; onStatus: (status: DesktopStatus) => void; onNotice: (message: string | null) => void; onError: (message: string | null) => void }) {

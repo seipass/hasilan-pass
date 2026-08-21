@@ -22,6 +22,7 @@ const lockedStatus: DesktopStatus = {
   pendingCount: 0,
   conflictCount: 0,
   autoLockMinutes: 15,
+  rememberUnlock: false,
   lastSyncAt: null,
   profiles: [],
 };
@@ -105,6 +106,32 @@ beforeEach(() => {
 });
 
 describe("DesktopApp", () => {
+  it("resumes a remembered session and unlocks after a foreground transition", async () => {
+    const rememberedStatus: DesktopStatus = {
+      ...lockedStatus,
+      online: false,
+      serverUrl: "https://vault.example.test",
+      email: "alice@example.test",
+      rememberUnlock: true,
+      profiles: unlockedStatus.profiles,
+    };
+    const onlineLockedStatus: DesktopStatus = { ...rememberedStatus, online: true };
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "status") return rememberedStatus;
+      if (command === "resume_session") return onlineLockedStatus;
+      if (command === "unlock_with_device_key") return unlockedStatus;
+      if (command === "list_items") return [summary];
+      if (command === "organization_catalog") return emptyCatalog;
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<DesktopApp />);
+
+    expect(await screen.findByText("Example account")).toBeTruthy();
+    expect(mocks.invoke).toHaveBeenCalledWith("resume_session");
+    expect(mocks.invoke).toHaveBeenCalledWith("unlock_with_device_key");
+  });
+
   it("logs in through the native boundary and only decrypts an explicitly selected item", async () => {
     mocks.invoke.mockImplementation(async (command: string) => {
       if (command === "status") return lockedStatus;

@@ -60,6 +60,33 @@ random account X25519 sharing private key (32 bytes)
 Master passwords, master keys, stretched keys, plaintext user keys, plaintext item keys,
 and plaintext attachment keys never cross the client/server boundary.
 
+### Opt-in device unlock envelope
+
+Device unlock is a separate wrapping layer and is never derived from, or equivalent to, the
+master password. When explicitly enabled, a client creates a device-bound wrapping key in the
+platform secure store (non-extractable WebCrypto AES-GCM for Web/extension, OS keyring plus
+XChaCha20-Poly1305 for desktop, Android Keystore AES-GCM for Android). The random 64-byte User Key
+is encrypted as a versioned envelope whose AAD binds the application, account/profile, device,
+and purpose. Only the ciphertext envelope and the platform-protected wrapping key are durable.
+
+```text
+platform/device wrapping key
+  +-- AEAD(version, account, device, key-version, purpose) -> wrapped User Key
+```
+
+An access token is never part of this envelope. Web session metadata and extension refresh tokens
+are separate encrypted records; desktop refresh credentials remain separate OS secrets. A manual
+lock records suppression metadata and prevents automatic envelope use until an explicit password
+unlock. Logout or remote revocation removes the envelope and session records. A compromised
+same-origin Web Vault can still invoke WebCrypto, so the option is opt-in and installed clients
+provide the stronger process/OS boundary.
+
+The device envelope key-version is a SHA-256 fingerprint of the protected user key and KDF
+parameters. New envelopes authenticate that fingerprint as metadata and AAD (legacy records are
+migrated only after a successful unlock), so a stale envelope cannot be used after server-side
+key/KDF rotation. Android's biometric envelope additionally authenticates the profile context as
+AES-GCM AAD before a Keystore prompt releases the user key.
+
 ## KDF parameters
 
 New accounts default to the current Bitwarden Argon2id settings:

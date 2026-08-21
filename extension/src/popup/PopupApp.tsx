@@ -106,14 +106,17 @@ export function PopupApp() {
         throw new Error("Server access permission is required to sign in.");
       }
       const operation = mode === "login"
-        ? send<ExtensionState>({
-            type: "LOGIN",
-            serverUrl,
-            email,
-            password,
-            secondFactor: optional(field(data, "factor")),
-            rememberDevice: data.get("rememberDevice") === "on",
-          })
+        ? state?.authenticated === true
+          ? send<ExtensionState>({ type: "UNLOCK", email, password, rememberUnlock: data.get("rememberUnlock") === "on" })
+          : send<ExtensionState>({
+              type: "LOGIN",
+              serverUrl,
+              email,
+              password,
+              secondFactor: optional(field(data, "factor")),
+              rememberDevice: data.get("rememberDevice") === "on",
+              rememberUnlock: data.get("rememberUnlock") === "on",
+            })
         : send<ExtensionState>({ type: "REGISTER", serverUrl, email, password });
       password = "";
       const next = await operation;
@@ -168,6 +171,7 @@ export function PopupApp() {
         ceremonyId: challenge.ceremonyId,
         credential,
         rememberDevice: data.get("rememberDevice") === "on",
+        rememberUnlock: data.get("rememberUnlock") === "on",
       });
       setState(next);
       form.reset();
@@ -197,7 +201,15 @@ export function PopupApp() {
 
   async function lock(): Promise<void> {
     await send({ type: "LOCK" }).catch(() => undefined);
-    setState((current) => current === null ? null : { ...current, unlocked: false, accountId: null, itemCount: 0, pending: null });
+    setState((current) => current === null ? null : { ...current, unlocked: false, itemCount: 0, pending: null });
+    setItems([]);
+    setSelected(null);
+    setView("vault");
+  }
+
+  async function logout(): Promise<void> {
+    await send({ type: "LOGOUT" }).catch((caught) => setError(message(caught)));
+    await refreshState();
     setItems([]);
     setSelected(null);
     setView("vault");
@@ -468,13 +480,14 @@ export function PopupApp() {
           <label>Master password<input autoComplete={mode === "login" ? "current-password" : "new-password"} minLength={mode === "register" ? 12 : undefined} name="password" required type="password" /></label>
           {mode === "login" ? (
             <>
-              <label>Authenticator or recovery code <span>if enabled</span><input autoComplete="one-time-code" name="factor" /></label>
-              <label className="popup-checkbox"><input name="rememberDevice" type="checkbox" />Trust this browser for 30 days</label>
+              {state.authenticated ? null : <label>Authenticator or recovery code <span>if enabled</span><input autoComplete="one-time-code" name="factor" /></label>}
+              {state.authenticated ? null : <label className="popup-checkbox"><input name="rememberDevice" type="checkbox" />Trust this browser for 30 days</label>}
+              <label className="popup-checkbox"><input name="rememberUnlock" type="checkbox" /><span>Remember unlock on this device (encrypted, optional)<small className="remember-warning">Anyone using this device may unlock the vault; memory-only mode is stronger.</small></span></label>
             </>
           ) : null}
           {error === null ? null : <p className="error" role="alert">{error}</p>}
           <button className="primary" disabled={busy} type="submit">{busy ? "Deriving keys…" : mode === "login" ? "Unlock vault" : "Create vault"}</button>
-          {mode === "login" ? (
+          {mode === "login" && !state.authenticated ? (
             <div className="auth-alternatives">
               <button disabled={busy} onClick={(event) => void authenticateWithWebauthn(event, "passkey")} type="button">Sign in with account passkey</button>
               <button disabled={busy} onClick={(event) => void authenticateWithWebauthn(event, "mfa")} type="button">Use security key as 2FA</button>
@@ -542,7 +555,7 @@ export function PopupApp() {
       ) : null}
       {view === "editor" ? <LoginEditor busy={busy} generated={generated} item={editing} onSave={(draft) => void saveLogin(draft)} /> : null}
       {view === "generator" ? <Generator generated={generated} onCopy={(value) => void copy(value)} onGenerate={(kind, length) => void generate(kind, length)} onUse={() => { setEditing(null); setView("editor"); }} /> : null}
-      {view === "settings" ? <Settings state={state} onEnable={() => void enableCurrentSite()} onLock={() => void lock()} /> : null}
+      {view === "settings" ? <Settings onAutoLock={(minutes) => void send<ExtensionState>({ type: "SET_AUTO_LOCK", minutes }).then(setState).catch((caught) => setError(message(caught)))} onRememberUnlock={(enabled) => void send<ExtensionState>({ type: "SET_REMEMBER_UNLOCK", enabled }).then(setState).catch((caught) => setError(message(caught)))} state={state} onEnable={() => void enableCurrentSite()} onLock={() => void lock()} onLogout={() => void logout()} /> : null}
     </main>
   );
 }
@@ -698,15 +711,19 @@ function Generator({ generated, onGenerate, onCopy, onUse }: { generated: Genera
   );
 }
 
-function Settings({ state, onEnable, onLock }: { state: ExtensionState; onEnable: () => void; onLock: () => void }) {
+function Settings({ state, onEnable, onLock, onLogout, onAutoLock, onRememberUnlock }: { state: ExtensionState; onEnable: () => void; onLock: () => void; onLogout: () => void; onAutoLock: (minutes: number | null) => void; onRememberUnlock: (enabled: boolean) => void }) {
   return (
     <section className="settings">
       <h2>Extension settings</h2>
       <div className="setting-row"><span>Account</span><strong>{state.email}</strong></div>
       <div className="setting-row"><span>Server</span><strong>{state.serverUrl}</strong></div>
+      <label className="setting-row">Automatic lock<select aria-label="Automatic lock delay" onChange={(event) => onAutoLock(event.target.value === "never" ? null : Number(event.target.value))} value={state.autoLockMinutes === null ? "never" : String(state.autoLockMinutes)}><option value="1">1 minute</option><option value="5">5 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">1 hour</option><option value="240">4 hours</option><option value="never">Never</option></select></label>
+      <label className="setting-row"><span>Remember unlock on this device</span><input aria-label="Remember unlock on this device" checked={state.rememberUnlock} onChange={(event) => onRememberUnlock(event.currentTarget.checked)} type="checkbox" /></label>
+      <p className="remember-warning">Encrypted device storage is convenient, but memory-only mode is stronger against anyone who can use this device.</p>
       <div className="security-box"><strong>Secure runtime</strong><p>Keys and access tokens are memory-only. Browser storage contains ciphertext and non-secret preferences.</p></div>
       <button className="primary" onClick={onEnable} type="button">Enable autofill on current site</button>
-      <button className="danger full" onClick={onLock} type="button">Lock and revoke session</button>
+      <button className="primary full" onClick={onLock} type="button">Lock vault (keep session)</button>
+      <button className="danger full" onClick={onLogout} type="button">Log out and revoke session</button>
     </section>
   );
 }

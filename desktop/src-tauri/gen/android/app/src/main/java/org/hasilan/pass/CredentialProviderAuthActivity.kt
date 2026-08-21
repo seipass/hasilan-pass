@@ -53,7 +53,11 @@ class CredentialProviderAuthActivity : FragmentActivity() {
       finish()
       return
     }
-    BiometricVault.unwrap(this, { key ->
+    val context = AutofillNative.unlockContext() ?: run {
+      finish()
+      return
+    }
+    BiometricVault.unwrap(this, context, { key ->
       val unlocked = AutofillNative.unlock(key)
       key.fill(0)
       if (!unlocked) {
@@ -148,7 +152,11 @@ class CredentialProviderAuthActivity : FragmentActivity() {
       finish()
       return
     }
-    BiometricVault.unwrap(this, { key ->
+    val context = AutofillNative.unlockContext() ?: run {
+      finish()
+      return
+    }
+    BiometricVault.unwrap(this, context, { key ->
       val unlocked = AutofillNative.unlock(key)
       key.fill(0)
       if (!unlocked) {

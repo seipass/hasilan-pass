@@ -21,6 +21,7 @@ import type {
   SyncResponse,
   TokenResponse,
 } from "./types";
+import type { WebSessionRecord } from "./trusted-device";
 
 const API_PREFIX = "/api/v1";
 
@@ -51,14 +52,18 @@ interface RequestOptions {
 export class ApiClient {
   #session: TokenResponse | null = null;
   #refreshing: Promise<void> | null = null;
-  #onSessionLost: (() => void) | null = null;
+  #onSessionLost: ((session: TokenResponse | null) => void) | null = null;
   #csrfToken: string | null = null;
 
   get session(): TokenResponse | null {
     return this.#session;
   }
 
-  setSessionLostHandler(handler: () => void): void {
+  get csrfToken(): string | null {
+    return this.#csrfToken;
+  }
+
+  setSessionLostHandler(handler: (session: TokenResponse | null) => void): void {
     this.#onSessionLost = handler;
   }
 
@@ -69,6 +74,25 @@ export class ApiClient {
 
   adoptSession(session: TokenResponse): void {
     this.#session = session;
+  }
+
+  /** Resume a browser session using the HttpOnly refresh cookie. */
+  async restoreWebSession(record: WebSessionRecord): Promise<TokenResponse> {
+    this.#csrfToken = record.csrfToken;
+    try {
+      const session = await this.#request<TokenResponse>("/auth/refresh", {
+        method: "POST",
+        body: JSON.stringify({ refreshToken: "" }),
+        webSession: true,
+        csrf: true,
+        captureCsrf: true,
+      });
+      this.adoptSession(session);
+      return session;
+    } catch (error) {
+      this.clearSession();
+      throw error;
+    }
   }
 
   async prelogin(email: string): Promise<KdfSettings> {
@@ -140,6 +164,7 @@ export class ApiClient {
     if (this.#session === null || this.#csrfToken === null) {
       throw new Error("No active session to refresh.");
     }
+    const refreshingSession = this.#session;
     this.#refreshing = (async () => {
       try {
         const session = await this.#request<TokenResponse>("/auth/refresh", {
@@ -151,8 +176,14 @@ export class ApiClient {
         });
         this.adoptSession(session);
       } catch (error) {
-        this.#session = null;
-        this.#onSessionLost?.();
+        // A temporary network/server failure is not proof that the server revoked the
+        // session. Keep the in-memory session so the vault can remain usable offline; only an
+        // explicit authentication rejection crosses the logout boundary.
+        if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+          const currentSession = this.#session;
+          if (currentSession?.sessionId === refreshingSession.sessionId) this.clearSession();
+          this.#onSessionLost?.(refreshingSession);
+        }
         throw error;
       } finally {
         this.#refreshing = null;
