@@ -586,7 +586,7 @@ jobs:
           path: .
           format: spdx-json
           output-file: release/metadata/hasilan-pass-${{ needs.prepare.outputs.version }}.spdx.json
-          syft-version: 1.51.0
+          syft-version: v1.51.0
           upload-artifact: false
           upload-release-assets: false
       - name: Attest the release SBOM
