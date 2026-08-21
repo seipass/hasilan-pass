@@ -6,19 +6,29 @@ independent security review are still required, 2026-08-13.
 
 ## What the workflows prove
 
-The ordinary `CI` workflow compiles and tests the desktop application on Linux and
-Windows. Linux also builds the native executable in the existing full desktop job. The
-additional Windows platform job runs the TypeScript tests, native Rust tests, and a
-complete Tauri `--no-bundle` build, then requires the expected platform executable to
-exist. macOS is intentionally not scheduled by GitHub Actions.
+The `CI` workflow is tiered to avoid running the same expensive checks for every event:
+
+- pull requests run change-classified Rust, frontend, Linux desktop, Windows native
+  build, PostgreSQL, and security checks; Android PRs compile the emulator ABI and
+  Gradle tests but do not build release ABIs or boot an emulator;
+- implementation-affecting pushes to `main` add the installed-extension E2E journey,
+  Android emulator smoke, Compose backup/restore, and the full platform checks; docs-only
+  pushes keep the lightweight security check;
+- the nightly schedule runs the full main-branch suite plus dependency audits and fuzz
+  smoke; manual dispatch runs the same broad suite.
+
+OS-independent desktop lint, TypeScript tests, and Rust tests are kept in the Linux
+desktop job. The Windows job focuses on the native executable build and expected binary
+check. macOS is intentionally not scheduled by GitHub Actions.
 
 The `Release candidate` workflow has two modes:
 
 - a manual run builds unsigned/ad-hoc packages for packaging smoke tests; its desktop
   metadata says `unsigned-smoke` and it never creates a GitHub Release;
 - a pushed `v*` tag is a publication candidate. It fails unless Windows Authenticode
-  credentials are complete. It verifies the resulting native signatures, produces a
-  draft GitHub Release, and never publishes that draft automatically.
+  credentials are complete and the tagged commit has a successful CI run. It verifies
+  the resulting native signatures, produces a draft GitHub Release, and never publishes
+  that draft automatically.
 
 Both modes build Linux `.deb`, `.rpm`, and `.AppImage` packages, Windows NSIS `.exe` and
 MSI installers, a signed Android arm64-v8a APK/AAB, the Web Vault, Chromium and Firefox
