@@ -324,8 +324,10 @@ jobs:
             # The universal flavor normally compiles every ABI. Restrict this device gate to
             # the emulated x86_64 ABI. Tauri produced its shared Rust cdylib in the preceding
             # step, so Gradle must not re-enter Tauri's one-shot build connection here.
+            # Keep Tauri's Activity alive between tests: AndroidX's default ActivityFinisher calls
+            # onDestroy after each method, while Tauri tears down its Rust/EGL loop from onDestroy.
             adb wait-for-device && ready=0 && for attempt in $(seq 1 90); do if adb shell cmd package list packages >/dev/null 2>&1 && adb shell cmd activity get-config >/dev/null 2>&1; then ready=1; break; fi; sleep 2; done && test "$ready" -eq 1
-            cd desktop/src-tauri/gen/android && if ./gradlew :app:connectedUniversalDebugAndroidTest -PabiList=x86_64 -ParchList=x86_64 -PtargetList=x86_64 -x :app:rustBuildX86_64Debug --stacktrace; then :; else echo 'Android instrumentation logcat:'; adb logcat -d -v threadtime -t 1000 || true; exit 1; fi
+            cd desktop/src-tauri/gen/android && if ./gradlew :app:connectedUniversalDebugAndroidTest -PabiList=x86_64 -ParchList=x86_64 -PtargetList=x86_64 -Pandroid.testInstrumentationRunnerArguments.waitForActivitiesToComplete=false -x :app:rustBuildX86_64Debug --stacktrace; then :; else echo 'Android instrumentation logcat:'; adb logcat -d -v threadtime -t 1000 || true; exit 1; fi
       - name: Build arm64 debug APK and AAB
         if: github.event_name != 'pull_request'
         run: pnpm --dir desktop tauri android build --debug --target aarch64 --apk --aab --ci
