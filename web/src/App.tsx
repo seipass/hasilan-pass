@@ -102,6 +102,7 @@ export function App({ runtime }: AppProps) {
   const [totp, setTotp] = useState<TotpCode | null>(null);
   const [lockMinutes, setLockMinutes] = useState(readLockMinutes);
   const [rememberUnlock, setRememberUnlock] = useState(false);
+  const [rememberUnlockBusy, setRememberUnlockBusy] = useState(false);
   const cacheRef = useRef<EncryptedVaultCache | null>(null);
   const cursorRef = useRef<string | null>(null);
   const activityRef = useRef(Date.now());
@@ -637,6 +638,7 @@ export function App({ runtime }: AppProps) {
     // Reflect the native checkbox immediately. Persistence is asynchronous; if it fails, the
     // caller displays the error and we restore the previous controlled value below.
     setRememberUnlock(enabled);
+    setRememberUnlockBusy(true);
     try {
       if (enabled) {
         const key = runtime.exportUserKey();
@@ -658,6 +660,8 @@ export function App({ runtime }: AppProps) {
     } catch (error) {
       setRememberUnlock(previous);
       throw error;
+    } finally {
+      setRememberUnlockBusy(false);
     }
   }
 
@@ -1224,7 +1228,7 @@ export function App({ runtime }: AppProps) {
           <div><strong>End-to-end encrypted</strong><span>Keys live in this tab</span></div>
         </div>
         <label className="lock-setting">
-          <span><input checked={rememberUnlock} onChange={(event) => void changeRememberUnlock(event.currentTarget.checked).catch((error) => setAuthError(messageFromError(error)))} type="checkbox" /> Remember unlock</span>
+          <span><input checked={rememberUnlock} disabled={rememberUnlockBusy} onChange={(event) => void changeRememberUnlock(event.currentTarget.checked).catch((error) => setAuthError(messageFromError(error)))} type="checkbox" /> Remember unlock</span>
           <small className="remember-warning">Device access can unlock the vault; memory-only mode is stronger.</small>
         </label>
         <label className="lock-setting">
@@ -1282,7 +1286,7 @@ export function App({ runtime }: AppProps) {
                   <option value="sshKey">SSH key</option>
                 </select>
               </label>
-              <button aria-label={`New ${itemKindLabel(newItemKind).toLowerCase()}`} className="primary-button" onClick={() => { setGeneratedForEditor(undefined); setEditorKind(newItemKind); setEditorItem(null); }} type="button"><span>＋</span> New item</button>
+              <button aria-label={`New ${itemKindLabel(newItemKind).toLowerCase()}`} className="primary-button" disabled={rememberUnlockBusy} onClick={() => { setGeneratedForEditor(undefined); setEditorKind(newItemKind); setEditorItem(null); }} type="button"><span>＋</span> New item</button>
             </div>
           </header>
 
