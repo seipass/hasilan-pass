@@ -305,13 +305,14 @@ jobs:
         # depend on Google services. Pin the action commit for reproducible CI execution.
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
         with:
-          api-level: 35
+          # API 34 keeps the Android WebView/Tauri lifecycle smoke deterministic on
+          # hosted runners while still exercising the production targetSdk 36 app.
+          api-level: 34
           target: default
           arch: x86_64
-          # Headless hosted Linux runners can lose the SwiftShader color buffer when the
-          # Tauri WebView starts. Keep the emulator CPU-accelerated but disable GPU/Vulkan
-          # rendering so the instrumentation process does not die with EGL_BAD_ACCESS.
-          emulator-options: -no-window -gpu off -feature -Vulkan -no-snapshot -noaudio -no-boot-anim -camera-back none
+          # Use software rendering and disable Vulkan for deterministic headless WebView
+          # startup; API 34 avoids the API 35 emulator/WebView lifecycle crash.
+          emulator-options: -no-window -gpu swiftshader_indirect -feature -Vulkan -no-snapshot -noaudio -no-boot-anim -camera-back none
           # The emulator can report boot completion before the settings service is ready.
           # Let the smoke script wait for package/activity services instead of failing here.
           disable-animations: true
