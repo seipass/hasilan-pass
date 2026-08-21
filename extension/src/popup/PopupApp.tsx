@@ -199,6 +199,19 @@ export function PopupApp() {
     }
   }
 
+  function changeRememberUnlock(enabled: boolean): void {
+    const previous = state?.rememberUnlock ?? false;
+    // Reflect the checkbox immediately while encrypted device persistence completes. If the
+    // background operation fails, restore the previous controlled value and show the error.
+    setState((current) => current === null ? current : { ...current, rememberUnlock: enabled });
+    void send<ExtensionState>({ type: "SET_REMEMBER_UNLOCK", enabled })
+      .then(setState)
+      .catch((caught) => {
+        setState((current) => current === null ? current : { ...current, rememberUnlock: previous });
+        setError(message(caught));
+      });
+  }
+
   async function lock(): Promise<void> {
     await send({ type: "LOCK" }).catch(() => undefined);
     setState((current) => current === null ? null : { ...current, unlocked: false, itemCount: 0, pending: null });
@@ -555,7 +568,7 @@ export function PopupApp() {
       ) : null}
       {view === "editor" ? <LoginEditor busy={busy} generated={generated} item={editing} onSave={(draft) => void saveLogin(draft)} /> : null}
       {view === "generator" ? <Generator generated={generated} onCopy={(value) => void copy(value)} onGenerate={(kind, length) => void generate(kind, length)} onUse={() => { setEditing(null); setView("editor"); }} /> : null}
-      {view === "settings" ? <Settings onAutoLock={(minutes) => void send<ExtensionState>({ type: "SET_AUTO_LOCK", minutes }).then(setState).catch((caught) => setError(message(caught)))} onRememberUnlock={(enabled) => void send<ExtensionState>({ type: "SET_REMEMBER_UNLOCK", enabled }).then(setState).catch((caught) => setError(message(caught)))} state={state} onEnable={() => void enableCurrentSite()} onLock={() => void lock()} onLogout={() => void logout()} /> : null}
+      {view === "settings" ? <Settings onAutoLock={(minutes) => void send<ExtensionState>({ type: "SET_AUTO_LOCK", minutes }).then(setState).catch((caught) => setError(message(caught)))} onRememberUnlock={changeRememberUnlock} state={state} onEnable={() => void enableCurrentSite()} onLock={() => void lock()} onLogout={() => void logout()} /> : null}
     </main>
   );
 }

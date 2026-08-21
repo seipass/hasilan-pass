@@ -183,6 +183,9 @@ test("register, enforce hostile-page boundaries, autofill, update, confirm in We
       return state.pending?.username;
     }).toBe("alice-extension");
 
+    // The popup remains on the selected item after the site autofill submission. Return to
+    // the vault list before opening settings.
+    await popup.getByRole("button", { name: "Back" }).click();
     await popup.getByRole("button", { name: "Settings" }).click();
     await popup.getByRole("checkbox", { name: "Remember unlock on this device" }).check();
     await popup.getByRole("button", { name: "Back" }).click();
