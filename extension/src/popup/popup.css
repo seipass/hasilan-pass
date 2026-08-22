@@ -194,9 +194,15 @@ input:focus, textarea:focus { border-color: #67763d; outline: 2px solid rgb(220 
 
 @media (max-width: 620px) {
   html, body, #root { width: 380px; }
-  .vault-layout { grid-template-columns: 1fr; }
-  .vault-sidebar { min-height: 285px; }
-  .item-pane { min-height: 330px; }
+  /* Browser action popups are often capped near 400px wide. Keep the list and
+     detail pane side-by-side at that size instead of pushing details below
+     the fold where they appear to be missing. */
+  .vault-layout { grid-template-columns: minmax(150px, 44%) minmax(0, 1fr); gap: 8px; }
+  .vault-sidebar { padding: 8px; }
+  .item-pane { padding: 10px; }
+  .vault-row { grid-template-columns: 28px minmax(0, 1fr) auto; gap: 6px; padding: 7px; }
+  .vault-row .row-icon { width: 28px; height: 28px; }
+  .vault-sidebar .quick-actions button { font-size: 7px; }
 }
 
 /* Depo UI: dense, calm surfaces with a single violet action family. */
