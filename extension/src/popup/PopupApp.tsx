@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type MouseEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type MouseEvent } from "react";
 import browser from "webextension-polyfill";
 
 import { getAccountWebauthnCredential } from "../account-webauthn";
@@ -26,7 +26,9 @@ type GeneratedValue = { kind: "password" | "username"; value: string };
 export function PopupApp() {
   const [state, setState] = useState<ExtensionState | null>(null);
   const [items, setItems] = useState<ItemSummary[]>([]);
+  const [favorites, setFavorites] = useState<ItemSummary[]>([]);
   const [selected, setSelected] = useState<VaultItem | null>(null);
+  const [activePageUrl, setActivePageUrl] = useState<string | null>(null);
   const [view, setView] = useState<View>("vault");
   const [editing, setEditing] = useState<VaultItem | null>(null);
   const [mode, setMode] = useState<"login" | "register">("login");
@@ -39,6 +41,7 @@ export function PopupApp() {
 
   useEffect(() => {
     void refreshState();
+    void refreshActivePage();
   }, []);
 
   useEffect(() => {
@@ -69,14 +72,37 @@ export function PopupApp() {
     return () => window.clearInterval(timer);
   }, [selected]);
 
+  const orderedItems = useMemo(() => {
+    if (activePageUrl === null) return items;
+    return [...items].sort((left, right) => {
+      const leftMatches = siteMatches(left.primaryUri, activePageUrl) ? 1 : 0;
+      const rightMatches = siteMatches(right.primaryUri, activePageUrl) ? 1 : 0;
+      return rightMatches - leftMatches;
+    });
+  }, [activePageUrl, items]);
+
+  const orderedFavorites = useMemo(() => {
+    if (activePageUrl === null) return favorites;
+    return [...favorites].sort((left, right) => {
+      const leftMatches = siteMatches(left.primaryUri, activePageUrl) ? 1 : 0;
+      const rightMatches = siteMatches(right.primaryUri, activePageUrl) ? 1 : 0;
+      return rightMatches - leftMatches;
+    });
+  }, [activePageUrl, favorites]);
+
   async function refreshState(): Promise<void> {
     try {
       const next = await send<ExtensionState>({ type: "GET_STATE" });
       setState(next);
-      if (next.unlocked) await listItems(query);
+      if (next.unlocked) await Promise.all([listItems(query), listFavorites()]);
     } catch (caught) {
       setError(message(caught));
     }
+  }
+
+  async function refreshActivePage(): Promise<void> {
+    const [tab] = await browser.tabs.query({ active: true, currentWindow: true }).catch(() => []);
+    setActivePageUrl(tab?.url ?? null);
   }
 
   async function listItems(search: string): Promise<void> {
@@ -86,6 +112,14 @@ export function PopupApp() {
       if (search === "") {
         setState((current) => current === null ? null : { ...current, itemCount: next.length });
       }
+    } catch (caught) {
+      setError(message(caught));
+    }
+  }
+
+  async function listFavorites(): Promise<void> {
+    try {
+      setFavorites(await send<ItemSummary[]>({ type: "LIST_ITEMS", query: "", category: "favorites" }));
     } catch (caught) {
       setError(message(caught));
     }
@@ -122,7 +156,7 @@ export function PopupApp() {
       const next = await operation;
       setState(next);
       form.reset();
-      await listItems("");
+      await Promise.all([listItems(""), listFavorites()]);
     } catch (caught) {
       setError(message(caught));
     } finally {
@@ -175,7 +209,7 @@ export function PopupApp() {
       });
       setState(next);
       form.reset();
-      await listItems("");
+      await Promise.all([listItems(""), listFavorites()]);
     } catch (caught) {
       setError(message(caught));
     } finally {
@@ -190,7 +224,7 @@ export function PopupApp() {
     setBusy(true);
     try {
       setState(await send<ExtensionState>({ type: "SYNC" }));
-      await listItems(query);
+      await Promise.all([listItems(query), listFavorites()]);
       setNotice("Encrypted vault synchronized.");
     } catch (caught) {
       setError(message(caught));
@@ -216,6 +250,7 @@ export function PopupApp() {
     await send({ type: "LOCK" }).catch(() => undefined);
     setState((current) => current === null ? null : { ...current, unlocked: false, itemCount: 0, pending: null });
     setItems([]);
+    setFavorites([]);
     setSelected(null);
     setView("vault");
   }
@@ -224,6 +259,7 @@ export function PopupApp() {
     await send({ type: "LOGOUT" }).catch((caught) => setError(message(caught)));
     await refreshState();
     setItems([]);
+    setFavorites([]);
     setSelected(null);
     setView("vault");
   }
@@ -231,7 +267,7 @@ export function PopupApp() {
   async function openItem(id: string): Promise<void> {
     try {
       setSelected(await send<VaultItem>({ type: "GET_ITEM", id }));
-      setView("item");
+      setView("vault");
     } catch (caught) {
       setError(message(caught));
     }
@@ -247,8 +283,8 @@ export function PopupApp() {
       setSelected(item);
       setEditing(null);
       setGenerated(null);
-      setView("item");
-      await listItems(query);
+      setView("vault");
+      await Promise.all([listItems(query), listFavorites()]);
       setNotice("Credential encrypted and saved.");
     } catch (caught) {
       setError(message(caught));
@@ -264,7 +300,7 @@ export function PopupApp() {
       await send({ type: "DELETE_ITEM", id: selected.id });
       setSelected(null);
       setView("vault");
-      await listItems(query);
+      await Promise.all([listItems(query), listFavorites()]);
       setNotice("Credential moved to trash.");
     } catch (caught) {
       setError(message(caught));
@@ -417,7 +453,7 @@ export function PopupApp() {
         throw new Error("Site access was not granted.");
       }
       await send({ type: "REGISTER_SITE", matchPattern, tabId: tab.id });
-      setNotice(`Autofill enabled for ${url.hostname}.`);
+      setNotice(`Autofill refreshed for ${url.hostname}.`);
     } catch (caught) {
       setError(message(caught));
     }
@@ -428,7 +464,7 @@ export function PopupApp() {
     try {
       await send({ type: "SAVE_PENDING", existingId });
       setState((current) => current === null ? null : { ...current, pending: null });
-      await listItems(query);
+      await Promise.all([listItems(query), listFavorites()]);
       setNotice(existingId === null ? "New credential saved." : "Saved password updated.");
     } catch (caught) {
       setError(message(caught));
@@ -478,6 +514,12 @@ export function PopupApp() {
     }
   }
 
+  function clearSelection(): void {
+    setSelected(null);
+    setEditing(null);
+    setView("vault");
+  }
+
   if (state === null) return <div className="popup-loading"><img alt="" className="logo" src="/icons/icon.svg" /><p>Loading vault core…</p></div>;
   if (!state.unlocked) {
     return (
@@ -515,9 +557,26 @@ export function PopupApp() {
   return (
     <main className="popup">
       <Header
-        onBack={view === "vault" ? undefined : () => { setView("vault"); setSelected(null); setEditing(null); }}
+        onBack={view === "vault" && selected === null ? undefined : clearSelection}
         subtitle={`${state.itemCount} encrypted item${state.itemCount === 1 ? "" : "s"}`}
       />
+      {orderedFavorites.length === 0 ? null : (
+        <section className="favorite-strip" aria-label="Favorite items">
+          <div className="favorite-strip-heading"><span>Favorites</span><small>{orderedFavorites.length} quick access</small></div>
+          <div className="favorite-scroller">
+            {orderedFavorites.map((item) => {
+              const currentSite = siteMatches(item.primaryUri, activePageUrl);
+              return (
+                <button className={`favorite-card${currentSite ? " current-site" : ""}${selected?.id === item.id ? " selected" : ""}`} key={item.id} onClick={() => void openItem(item.id)} title={item.primaryUri ?? item.name} type="button">
+                  <img alt="" className="favorite-icon" src="/icons/icon.svg" />
+                  <span><strong>{item.name}</strong><small>{currentSite ? "Current site" : item.username ?? item.primaryUri ?? "Login"}</small></span>
+                  <i>{item.hasTotp ? "◷" : "★"}</i>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      )}
       {notice === null ? null : <button className="notice" onClick={() => setNotice(null)} type="button">{notice}</button>}
       {error === null ? null : <button className="error dismissible" onClick={() => setError(null)} type="button">{error}</button>}
 
@@ -527,25 +586,48 @@ export function PopupApp() {
 
       {view === "vault" ? (
         <>
-          <div className="search-row">
-            <input aria-label="Search vault" autoFocus onChange={(event) => setQuery(event.target.value)} placeholder="Search vault" value={query} />
-            <button aria-label="Sync vault" disabled={busy} onClick={() => void sync()} type="button">↻</button>
+          <div className="vault-layout">
+            <aside className="vault-sidebar" aria-label="Vault item list">
+              <div className="sidebar-heading"><div><span>Vault items</span><strong>{orderedItems.length} saved</strong></div><small>{pageHost(activePageUrl) ?? "All sites"}</small></div>
+              <div className="search-row">
+                <input aria-label="Search vault" autoFocus onChange={(event) => setQuery(event.target.value)} placeholder="Search vault" value={query} />
+                <button aria-label="Sync vault" disabled={busy} onClick={() => void sync()} type="button">↻</button>
+              </div>
+              <div className="quick-actions">
+                <button onClick={() => { setEditing(null); setGenerated(null); setView("editor"); }} type="button"><span>＋</span>New</button>
+                <button onClick={() => setView("generator")} type="button"><span>✦</span>Generate</button>
+                <button onClick={() => void enableCurrentSite()} type="button"><span>↻</span>Refresh</button>
+              </div>
+              <section className="vault-items" aria-label="Vault items">
+                {orderedItems.length === 0 ? <div className="empty"><strong>No matching items</strong><p>Create a login or synchronize this account.</p></div> : null}
+                {orderedItems.map((item) => {
+                  const currentSite = siteMatches(item.primaryUri, activePageUrl);
+                  return (
+                    <button className={`vault-row${currentSite ? " current-site" : ""}${selected?.id === item.id ? " selected" : ""}`} key={item.id} onClick={() => void openItem(item.id)} type="button">
+                      <img alt="" className="row-icon" src="/icons/icon.svg" />
+                      <span><strong>{item.name}</strong><small>{item.username ?? item.primaryUri ?? "Login"}</small>{currentSite ? <small className="site-match">Current site</small> : null}</span>
+                      <i>{item.hasTotp ? "◷" : "›"}</i>
+                    </button>
+                  );
+                })}
+              </section>
+            </aside>
+            <section className="item-pane" aria-label="Selected item">
+              {selected === null ? <div className="selection-empty"><span className="selection-glyph">◇</span><strong>Select an item</strong><p>Choose a credential from the list to view its encrypted details.</p></div> : (
+                <ItemView
+                  busy={busy}
+                  item={selected}
+                  onAttach={(file, existing) => void uploadAttachment(file, existing)}
+                  onCopy={(value) => void copy(value)}
+                  onDelete={() => void removeItem()}
+                  onDownloadAttachment={(attachment) => void downloadAttachment(attachment)}
+                  onEdit={() => { setEditing(selected); setView("editor"); }}
+                  onRemoveAttachment={(attachment) => void removeAttachment(attachment)}
+                  totp={totp}
+                />
+              )}
+            </section>
           </div>
-          <div className="quick-actions">
-            <button onClick={() => { setEditing(null); setGenerated(null); setView("editor"); }} type="button"><span>＋</span>New</button>
-            <button onClick={() => setView("generator")} type="button"><span>✦</span>Generate</button>
-            <button onClick={() => void enableCurrentSite()} type="button"><span>↗</span>Enable site</button>
-          </div>
-          <section className="vault-items" aria-label="Vault items">
-            {items.length === 0 ? <div className="empty"><strong>No matching items</strong><p>Create a login or synchronize this account.</p></div> : null}
-            {items.map((item) => (
-              <button className="vault-row" key={item.id} onClick={() => void openItem(item.id)} type="button">
-                <img alt="" className="row-icon" src="/icons/icon.svg" />
-                <span><strong>{item.name}</strong><small>{item.username ?? item.primaryUri ?? "Login"}</small></span>
-                <i>{item.hasTotp ? "◷" : "›"}</i>
-              </button>
-            ))}
-          </section>
           <footer className="popup-footer">
             <button onClick={() => setView("settings")} type="button">Settings</button>
             <button onClick={() => void lock()} type="button">Lock</button>
@@ -730,11 +812,12 @@ function Settings({ state, onEnable, onLock, onLogout, onAutoLock, onRememberUnl
       <h2>Extension settings</h2>
       <div className="setting-row"><span>Account</span><strong>{state.email}</strong></div>
       <div className="setting-row"><span>Server</span><strong>{state.serverUrl}</strong></div>
+      <div className="setting-row"><span>Autofill</span><strong>All HTTP(S) sites</strong></div>
       <label className="setting-row">Automatic lock<select aria-label="Automatic lock delay" onChange={(event) => onAutoLock(event.target.value === "never" ? null : Number(event.target.value))} value={state.autoLockMinutes === null ? "never" : String(state.autoLockMinutes)}><option value="1">1 minute</option><option value="5">5 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">1 hour</option><option value="240">4 hours</option><option value="never">Never</option></select></label>
       <label className="setting-row"><span>Remember unlock on this device</span><input aria-label="Remember unlock on this device" checked={state.rememberUnlock} onChange={(event) => onRememberUnlock(event.currentTarget.checked)} type="checkbox" /></label>
       <p className="remember-warning">Encrypted device storage is convenient, but memory-only mode is stronger against anyone who can use this device.</p>
       <div className="security-box"><strong>Secure runtime</strong><p>Keys and access tokens are memory-only. Browser storage contains ciphertext and non-secret preferences.</p></div>
-      <button className="primary" onClick={onEnable} type="button">Enable autofill on current site</button>
+      <button className="primary" onClick={onEnable} type="button">Refresh Autofill on current page</button>
       <button className="primary full" onClick={onLock} type="button">Lock vault (keep session)</button>
       <button className="danger full" onClick={onLogout} type="button">Log out and revoke session</button>
     </section>
@@ -801,6 +884,30 @@ function accountRpId(options: Record<string, unknown>): string {
 
 function matchesPage(url: URL): boolean {
   return (url.protocol === "https:" || url.protocol === "http:") && url.hostname !== "";
+}
+
+function siteMatches(primaryUri: string | null, pageUrl: string | null): boolean {
+  if (primaryUri === null || pageUrl === null) return false;
+  try {
+    const saved = new URL(primaryUri);
+    const current = new URL(pageUrl);
+    if (!matchesPage(saved) || !matchesPage(current) || saved.protocol !== current.protocol) return false;
+    return saved.hostname === current.hostname
+      || saved.hostname.endsWith(`.${current.hostname}`)
+      || current.hostname.endsWith(`.${saved.hostname}`);
+  } catch {
+    return false;
+  }
+}
+
+function pageHost(pageUrl: string | null): string | null {
+  if (pageUrl === null) return null;
+  try {
+    const url = new URL(pageUrl);
+    return matchesPage(url) ? url.hostname : null;
+  } catch {
+    return null;
+  }
 }
 
 function field(data: FormData, name: string): string {

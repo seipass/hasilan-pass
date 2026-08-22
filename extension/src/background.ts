@@ -6,6 +6,12 @@ import { ATTACHMENT_CHUNK_SIZE, decodeBase64Url, encodeBase64Url } from "./attac
 import { ExtensionCipherCache } from "./cache";
 import { isExtensionRequest, type ExtensionRequest, type ExtensionResponse } from "./messages";
 import { createRuntime, type ExtensionVaultRuntime } from "./runtime";
+import {
+  effectiveAutoLock,
+  normalizeAutoLock,
+  persistedAutoLock,
+  type AutoLockSetting,
+} from "./settings";
 import { DeviceSecretStore, TrustedDeviceStore, keyVersionFor } from "./trusted-device";
 import type {
   AttachmentInitiateRequest,
@@ -32,7 +38,6 @@ import type {
 
 const SETTINGS_KEY = "hasilan-extension-settings-v1";
 const LOCK_ALARM = "hasilan-extension-auto-lock";
-const DEFAULT_LOCK_MINUTES = 15;
 const PENDING_LIFETIME_MS = 2 * 60_000;
 const CONTENT_SCRIPT = "assets/content.js";
 const PASSKEY_PAGE_SCRIPT = "assets/passkey-page.js";
@@ -50,8 +55,6 @@ interface StoredSettings {
   /** `null` means never auto-lock; omitted in the pre-setting schema. */
   autoLockMinutes?: AutoLockSetting;
 }
-
-type AutoLockSetting = 1 | 5 | 15 | 30 | 60 | 240 | null;
 
 interface PendingCredential {
   pageUrl: string;
@@ -631,7 +634,7 @@ async function restorePersistentSession(): Promise<void> {
       serverUrl: record.serverUrl,
       email: record.email,
       deviceIdentifier: (settings?.deviceIdentifier ?? (await deviceRequest()).identifier),
-      autoLockMinutes: settings?.autoLockMinutes ?? DEFAULT_LOCK_MINUTES,
+      autoLockMinutes: effectiveAutoLock(settings?.autoLockMinutes),
     };
     await persistRefreshToken(session, record.serverUrl);
     await deviceSecrets.saveSession({
@@ -1060,7 +1063,7 @@ function state(runtime: ExtensionVaultRuntime): ExtensionState {
   return {
     authenticated,
     unlocked,
-    autoLockMinutes: settings?.autoLockMinutes ?? DEFAULT_LOCK_MINUTES,
+    autoLockMinutes: effectiveAutoLock(settings?.autoLockMinutes),
     rememberUnlock: rememberedUnlockEnabled,
     serverUrl: settings?.serverUrl ?? null,
     email: settings?.email ?? null,
@@ -1075,7 +1078,7 @@ function requireUnlocked(runtime: ExtensionVaultRuntime): void {
 }
 
 async function touch(): Promise<void> {
-  const minutes = settings?.autoLockMinutes ?? DEFAULT_LOCK_MINUTES;
+  const minutes = effectiveAutoLock(settings?.autoLockMinutes);
   if (minutes === null) {
     await browser.alarms.clear(LOCK_ALARM).catch(() => false);
     return;
@@ -1102,7 +1105,7 @@ async function saveSettings(serverUrl: string, email: string): Promise<void> {
     serverUrl,
     email,
     deviceIdentifier: current.deviceIdentifier,
-    autoLockMinutes: current.autoLockMinutes ?? DEFAULT_LOCK_MINUTES,
+    autoLockMinutes: effectiveAutoLock(current.autoLockMinutes),
   };
   api.configure(serverUrl);
   await browser.storage.local.set({ [SETTINGS_KEY]: settings });
@@ -1123,20 +1126,6 @@ async function deviceRequest(): Promise<{ identifier: string; name: string; devi
 function optional(value: string | null): string | null {
   const normalized = value?.trim() ?? "";
   return normalized === "" ? null : normalized;
-}
-
-function normalizeAutoLock(value: number | null): AutoLockSetting {
-  if (value === null) return null;
-  if (value === 1 || value === 5 || value === 15 || value === 30 || value === 60 || value === 240) return value;
-  throw new Error("Choose an automatic-lock delay from the available options.");
-}
-
-function persistedAutoLock(value: unknown): AutoLockSetting {
-  if (value === null) return null;
-  if (value === undefined) return DEFAULT_LOCK_MINUTES;
-  return value === 1 || value === 5 || value === 15 || value === 30 || value === 60 || value === 240
-    ? value
-    : DEFAULT_LOCK_MINUTES;
 }
 
 function pendingSummary(): PendingCredentialSummary | null {

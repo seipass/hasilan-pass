@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Hasilan Pass",
   "short_name": "Hasilan",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3hWFOEh/lt80TYpz4qZIog72TFzRtxiXLm4Z98JaZYTPfzeXXi5IGDK1/YDayI5d9bU1u+GkV9t1j7rPmcT2O959KJn6JCmH/7yfdsIoulidH4bxc14fABmm0jWW3L6hppdnZFkeGurtM+BsnExAthjBQn7Cg4QQDA75uqHreNMazEkTBzBt/gqHsa3BQb5F8dq+94WjTzhX1ZMrSlGh5Vz1dLZ5cAJhes2XkOVhYNg5uFY1HGc+FOPt8W/vWI0gC3UpfyASV5SKIeWPn/J4OWBAhkBNFAWqhAShWVdn1YTGbBwLkzTgRQBXgjAGbFuzsSB20Sfz/WYOYvNCX53HdwIDAQAB",
   "description": "Zero-knowledge password manager for your self-hosted Hasilan Pass server.",
   "minimum_chrome_version": "121",
@@ -35,9 +35,20 @@
     "scripting",
     "storage"
   ],
-  "optional_host_permissions": [
+  "host_permissions": [
     "http://*/*",
     "https://*/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": ["assets/content.js"],
+      "all_frames": true,
+      "run_at": "document_start"
+    }
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
