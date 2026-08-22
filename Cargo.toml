@@ -22,7 +22,7 @@ license = "AGPL-3.0-or-later"
 repository = "https://github.com/hasilan/hasilan-pass"
 
 [workspace.dependencies]
-aes = "0.8.4"
+aes = "0.9.2"
 anyhow = "1.0.99"
 argon2 = { version = "0.5.3", features = ["zeroize"] }
 async-trait = "0.1.89"
