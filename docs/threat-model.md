@@ -56,7 +56,7 @@ Controls: isolated extension worlds; strict message schemas and sender validatio
 content scripts never receive the whole vault; exact canonical origin/RP validation;
 public-suffix-aware base-domain matching; HTTPS downgrade warnings; user confirmation
 for passkeys and risky iframe fills; no remote code/eval/unsafe `innerHTML`; CSP; minimal
-optional host permissions; secrets returned only after a background decision and user
+scoped HTTP(S) host permissions with per-origin main-world registration; secrets returned only after a background decision and user
 gesture.
 
 Residual risk: once intentionally filled, the target page can read the credential. A

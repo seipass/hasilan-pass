@@ -53,7 +53,7 @@ reload/unlock, with Playwright coverage and no plaintext persistence.
 - [x] exact/host/base-domain/starts-with/regex/never URI strategies
 - [x] explicit/context/inline autofill, clipboard timeout, and auto-lock
 - [x] hostile iframe and page-owned open-shadow-root regression suite with forged sender-URL checks
-- [x] least-privilege optional host permissions and strict CSP
+- [x] default HTTP(S) autofill host permissions, per-origin passkey registration, and strict CSP
 
 Exit gate: extension alone performs login -> sync -> detect -> select -> autofill -> save
 new credential while the desktop application is absent.

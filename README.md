@@ -108,7 +108,8 @@ pnpm build:extension
 In Chromium, open `chrome://extensions`, enable Developer mode, choose **Load unpacked**,
 and select `extension/dist`. In Firefox, run `pnpm --dir extension build:firefox`, open
 `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on**, and select
-`extension/dist/manifest.json`. The extension asks for site access per origin, keeps an
+`extension/dist/manifest.json`. The extension has HTTP(S) site access by default so autofill
+is available on every web page; passkey integration can be refreshed per origin. It keeps an
 encrypted cache, performs URI matching and cryptography in Rust/WASM, supports autofill
 and confirmed save/update capture, and can provide vault passkeys with native fallback.
 

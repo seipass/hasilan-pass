@@ -6,7 +6,7 @@ Hasilan Pass ships a standalone Manifest V3 extension for Chromium and Firefox. 
 
 - The master password, account key, item keys, access token, and refresh token live only in the extension background runtime's memory. Suspending a Chromium service worker therefore locks the extension instead of persisting key material.
 - `storage.local` contains only the server URL, account email, a random device identifier, and opaque encrypted sync objects. IndexedDB is scoped by server and account ID.
-- Server and website access are optional host permissions requested by a direct user action. The checked-in manifest has no always-on wildcard host access.
+- The checked-in manifest grants the reviewed HTTP(S) host set so the packaged autofill content script is available on every web page by default. Passkey page integration and its main-world script remain explicitly refreshed per origin.
 - Dynamically registered content scripts receive only secret-free matching summaries. A fill action requests one credential by ID; the background runtime repeats the URL-match check before releasing it.
 - Content messages must originate from an HTTP(S) tab and claim the exact sender-frame URL. Fragments are ignored; the saved URI policy is still enforced by the Rust vault core.
 - Autofill follows composed focus and keyboard events into page-owned open shadow roots and observes their form submissions without traversing closed page roots. Every iframe performs its own URL-matched background request; a child frame cannot reuse its parent's match.
@@ -20,14 +20,14 @@ Autofill necessarily places a credential in page DOM inputs. JavaScript running 
 | Permission | Purpose |
 | --- | --- |
 | `storage` | Non-secret settings and the encrypted local cache |
-| `scripting` | Register the packaged content script for user-approved origins |
+| `scripting` | Register the passkey page integration for a user-approved origin |
 | `activeTab` | One-time interaction with the page selected by the user |
 | `alarms` | Enforce the inactivity lock without a long-running timer |
 | `contextMenus` | Open the credential chooser on demand |
 | `clipboardWrite` | Copy a selected secret and attempt to clear it after 30 seconds |
-| Optional HTTP(S) hosts | Connect to the chosen server or enable autofill for a chosen site |
+| HTTP(S) hosts | Run the packaged autofill content script on HTTP(S) pages by default |
 
-The implementation follows the browser vendors' guidance for [optional host permissions](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/manifest.json/optional_host_permissions), [dynamic content-script registration](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/scripting/registerContentScripts), and [Manifest V3 remote-code restrictions](https://developer.chrome.com/docs/extensions/develop/migrate/improve-security). Both `background.scripts` and `background.service_worker` are declared in the cross-browser source manifest because [Firefox still uses background scripts while Chromium uses a service worker](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/manifest.json/background). The Firefox packaging step removes the ignored service-worker key from its generated manifest.
+The implementation follows the browser vendors' guidance for [host permissions](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/manifest.json/host_permissions), [dynamic content-script registration](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/scripting/registerContentScripts), and [Manifest V3 remote-code restrictions](https://developer.chrome.com/docs/extensions/develop/migrate/improve-security). Both `background.scripts` and `background.service_worker` are declared in the cross-browser source manifest because [Firefox still uses background scripts while Chromium uses a service worker](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/manifest.json/background). The Firefox packaging step removes the ignored service-worker key from its generated manifest.
 
 Firefox 140+ on desktop (142+ on Android) displays its built-in data-transmission consent at install time. Hasilan declares authentication data, saved-site URLs, payment data, and identifying data because encrypted vault sync moves those categories between the browser and the server selected by the user. It does not declare telemetry because the extension sends none. These disclosures follow Mozilla's current [data collection and transmission taxonomy](https://extensionworkshop.com/documentation/develop/firefox-builtin-data-consent/).
 
