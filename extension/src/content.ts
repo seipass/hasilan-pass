@@ -1,3 +1,9 @@
+import {
+  classifyAutofillInput,
+  discoverAutofillFields,
+  isFillableInput,
+} from "./autofill-heuristics";
+
 (() => {
   interface RuntimeLike {
     sendMessage(message: unknown): Promise<unknown>;
@@ -44,6 +50,7 @@
   let menuCredentials: CredentialSummary[] = [];
   let keyboardSelection = -1;
   const submissionRoots = new WeakSet<Document | ShadowRoot>();
+  const mutationObservers = new WeakMap<Document | ShadowRoot, MutationObserver>();
 
   observeSubmissionRoot(document);
 
@@ -56,7 +63,7 @@
 
   document.addEventListener("focusin", (event) => {
     const input = inputFromEvent(event);
-    if (input !== null && isCredentialInput(input)) {
+    if (input !== null && classifyAutofillInput(input) !== null) {
       const root = input.getRootNode();
       if (root instanceof ShadowRoot) observeSubmissionRoot(root);
       focusedInput = input;
@@ -92,9 +99,13 @@
   runtime.onMessage.addListener((message: unknown) => {
     if (!isOpenMenuMessage(message)) return;
     const active = deepActiveInput();
-    const target = active instanceof HTMLInputElement && isCredentialInput(active)
+    const discovered = discoverAutofillFields(document);
+    const target = active instanceof HTMLInputElement && classifyAutofillInput(active) !== null
       ? active
-      : firstFillable(document.querySelectorAll<HTMLInputElement>('input[type="password"], input[autocomplete~="username"], input[type="email"]'));
+      : discovered.username
+        ?? discovered.password
+        ?? discovered.otp[0]
+        ?? null;
     if (target !== null) {
       focusedInput = target;
       void showMenu(target, true);
@@ -148,17 +159,29 @@
     keyboardSelection = -1;
     const host = document.createElement("div");
     host.setAttribute("data-hasilan-pass", "menu");
+    host.style.all = "initial";
     host.style.position = "fixed";
+    host.style.inset = "0";
+    host.style.width = "auto";
+    host.style.height = "auto";
     host.style.zIndex = "2147483647";
     host.style.margin = "0";
     host.style.padding = "0";
     host.style.border = "0";
+    host.style.pointerEvents = "none";
     host.style.colorScheme = "dark";
     const rect = target.getBoundingClientRect();
     const width = Math.min(Math.max(rect.width, 280), 390);
-    host.style.width = `${width}px`;
-    host.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))}px`;
-    host.style.top = `${Math.min(rect.bottom + 7, window.innerHeight - 280)}px`;
+    const viewportWidth = Math.max(window.innerWidth, width + 16);
+    const viewportHeight = Math.max(window.innerHeight, 320);
+    const left = Math.max(8, Math.min(rect.left, viewportWidth - width - 8));
+    const below = rect.bottom + 7;
+    const above = rect.top - 7 - 280;
+    const preferredTop = below + 280 <= viewportHeight - 8 || above < 8 ? below : above;
+    const top = Math.max(8, Math.min(preferredTop, viewportHeight - 280 - 8));
+    host.style.setProperty("--menu-left", `${left}px`);
+    host.style.setProperty("--menu-top", `${top}px`);
+    host.style.setProperty("--menu-width", `${width}px`);
     const shadow = host.attachShadow({ mode: "closed" });
     const style = document.createElement("style");
     style.textContent = MENU_CSS;
@@ -216,16 +239,10 @@
       });
       const treeRoot = target.getRootNode();
       const root: ParentNode = target.form ?? (treeRoot instanceof ShadowRoot ? treeRoot : document);
-      const username = firstFillable(root.querySelectorAll<HTMLInputElement>(
-        'input[autocomplete~="username"], input[autocomplete~="email"], input[type="email"], input[type="text"]',
-      ));
-      const password = firstFillable(root.querySelectorAll<HTMLInputElement>(
-        'input[autocomplete~="current-password"], input[type="password"]',
-      ));
-      const oneTimeCode = firstFillable(root.querySelectorAll<HTMLInputElement>('input[autocomplete~="one-time-code"]'));
-      if (credential.username !== null && username !== null) setInputValue(username, credential.username);
-      if (credential.password !== null && password !== null) setInputValue(password, credential.password);
-      if (credential.totp !== null && oneTimeCode !== null) setInputValue(oneTimeCode, credential.totp);
+      const fields = discoverAutofillFields(root, target);
+      if (credential.username !== null && fields.username !== null) setInputValue(fields.username, credential.username);
+      if (credential.password !== null && fields.password !== null) setInputValue(fields.password, credential.password);
+      if (credential.totp !== null) setTotpValue(fields.otp, credential.totp);
       credential = null;
       closeMenu();
     } catch (error) {
@@ -235,16 +252,14 @@
 
   function captureSubmittedCredential(form: HTMLFormElement): void {
     const passwords = [...form.querySelectorAll<HTMLInputElement>('input[type="password"]')]
-      .filter(isFillable)
+      .filter(isFillableInput)
       .filter((input) => input.value !== "");
     if (passwords.length === 0) return;
     const preferred = passwords.find((input) => input.autocomplete.toLowerCase().includes("new-password"))
       ?? passwords.find((input) => input.autocomplete.toLowerCase().includes("current-password"))
       ?? passwords.at(-1);
     if (preferred === undefined || preferred.value.length > 16_384) return;
-    const usernameInput = firstFillable(form.querySelectorAll<HTMLInputElement>(
-      'input[autocomplete~="username"], input[autocomplete~="email"], input[type="email"], input[type="text"]',
-    ));
+    const usernameInput = discoverAutofillFields(form).username;
     const username = usernameInput?.value.trim() || null;
     const message = {
       type: "CAPTURE_CREDENTIAL",
@@ -257,11 +272,41 @@
   }
 
   function observeSubmissionRoot(root: Document | ShadowRoot): void {
-    if (submissionRoots.has(root)) return;
-    submissionRoots.add(root);
-    root.addEventListener("submit", (event: Event) => {
-      if (event.target instanceof HTMLFormElement) captureSubmittedCredential(event.target);
-    }, true);
+    if (!submissionRoots.has(root)) {
+      submissionRoots.add(root);
+      root.addEventListener("submit", (event: Event) => {
+        if (event.target instanceof HTMLFormElement) captureSubmittedCredential(event.target);
+      }, true);
+    }
+    observeDynamicRoot(root);
+  }
+
+  function observeDynamicRoot(root: Document | ShadowRoot): void {
+    if (mutationObservers.has(root)) return;
+    const target = root instanceof Document ? root.documentElement : root;
+    if (target === null) {
+      window.addEventListener("DOMContentLoaded", () => observeDynamicRoot(root), { once: true });
+      return;
+    }
+    const observer = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) observeNestedRoots(node);
+      }
+      if (focusedInput !== null && !focusedInput.isConnected) {
+        focusedInput = null;
+        closeMenu();
+      }
+    });
+    observer.observe(target, { childList: true, subtree: true });
+    mutationObservers.set(root, observer);
+  }
+
+  function observeNestedRoots(node: Node): void {
+    if (!(node instanceof Element)) return;
+    if (node.shadowRoot !== null) observeSubmissionRoot(node.shadowRoot);
+    for (const child of node.querySelectorAll<HTMLElement>("*")) {
+      if (child.shadowRoot !== null) observeSubmissionRoot(child.shadowRoot);
+    }
   }
 
   function inputFromEvent(event: Event): HTMLInputElement | null {
@@ -279,11 +324,25 @@
   }
 
   function setInputValue(input: HTMLInputElement, value: string): void {
-    if (!isFillable(input)) return;
+    if (!isFillableInput(input)) return;
     if (inputValueSetter === undefined) input.value = value;
     else inputValueSetter.call(input, value);
+    input.setAttribute("data-hasilan-pass-filled", "true");
     input.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, data: value, inputType: "insertText" }));
     input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+  }
+
+  function setTotpValue(inputs: HTMLInputElement[], value: string): void {
+    if (inputs.length === 0) return;
+    if (inputs.length === 1) {
+      const input = inputs[0];
+      if (input !== undefined) setInputValue(input, value);
+      return;
+    }
+    const digits = [...value];
+    inputs.forEach((input, index) => {
+      setInputValue(input, digits[index] ?? "");
+    });
   }
 
   function closeMenu(): void {
@@ -300,28 +359,6 @@
     buttons.forEach((button, index) => {
       button.classList.toggle("keyboard-selected", index === keyboardSelection);
     });
-  }
-
-  function firstFillable(inputs: NodeListOf<HTMLInputElement> | HTMLInputElement[]): HTMLInputElement | null {
-    return [...inputs].find(isFillable) ?? null;
-  }
-
-  function isCredentialInput(input: HTMLInputElement): boolean {
-    const autocomplete = input.autocomplete.toLowerCase();
-    return isFillable(input) && (
-      input.type === "password"
-      || input.type === "email"
-      || autocomplete.includes("username")
-      || autocomplete.includes("current-password")
-      || autocomplete.includes("one-time-code")
-    );
-  }
-
-  function isFillable(input: HTMLInputElement): boolean {
-    if (input.disabled || input.readOnly || input.type === "hidden") return false;
-    const rect = input.getBoundingClientRect();
-    const style = getComputedStyle(input);
-    return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
   }
 
   async function send<T>(body: Record<string, unknown>): Promise<T> {
@@ -379,7 +416,7 @@
   const MENU_CSS = `
     :host { all: initial; color-scheme: dark; }
     * { box-sizing: border-box; }
-    .panel { overflow: hidden; border: 1px solid #414753; border-radius: 8px; color: #f8fafc; background: #14161d; box-shadow: 0 16px 40px rgb(0 0 0 / 28%); font-family: "Inter Variable", "SF Pro Display", Geist, Arial, sans-serif; }
+    .panel { position: fixed; top: var(--menu-top); left: var(--menu-left); width: min(var(--menu-width), calc(100vw - 16px)); max-height: 280px; overflow: hidden; pointer-events: auto; border: 1px solid #414753; border-radius: 8px; color: #f8fafc; background: #14161d; box-shadow: 0 16px 40px rgb(0 0 0 / 28%); font-family: "Inter Variable", "SF Pro Display", Geist, Arial, sans-serif; }
     .header { display: flex; height: 40px; align-items: center; justify-content: space-between; padding: 0 11px 0 13px; border-bottom: 1px solid #20232d; }
     .brand { color: #8588ff; font-size: 11px; letter-spacing: .03em; }
     .close { width: 25px; height: 25px; border: 0; border-radius: 50%; color: #81919c; background: transparent; font-size: 18px; cursor: pointer; }
