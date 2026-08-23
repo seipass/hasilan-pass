@@ -557,19 +557,23 @@ export function PopupApp() {
   return (
     <main className={`popup${view === "vault" ? " vault-popup" : ""}`}>
       <Header
+        busy={busy}
         onBack={view === "vault" && selected === null ? undefined : clearSelection}
-        subtitle={`${state.itemCount} encrypted item${state.itemCount === 1 ? "" : "s"}`}
+        onNew={view === "vault" ? () => { setEditing(null); setGenerated(null); setView("editor"); } : undefined}
+        onQueryChange={view === "vault" ? setQuery : undefined}
+        onSync={view === "vault" ? () => void sync() : undefined}
+        query={view === "vault" ? query : undefined}
       />
       {orderedFavorites.length === 0 ? null : (
         <section className="favorite-strip" aria-label="Favorite items">
-          <div className="favorite-strip-heading"><span>Favorites</span><small>{orderedFavorites.length} quick access</small></div>
+          <span className="favorite-strip-title">Favorites</span>
           <div className="favorite-scroller">
             {orderedFavorites.map((item) => {
               const currentSite = siteMatches(item.primaryUri, activePageUrl);
               return (
                 <button className={`favorite-card${currentSite ? " current-site" : ""}${selected?.id === item.id ? " selected" : ""}`} key={item.id} onClick={() => void openItem(item.id)} title={item.primaryUri ?? item.name} type="button">
                   <img alt="" className="favorite-icon" src="/icons/icon.svg" />
-                  <span><strong>{item.name}</strong><small>{currentSite ? "Current site" : item.username ?? item.primaryUri ?? "Login"}</small></span>
+                  <span><strong>{item.name}</strong></span>
                   <i>{item.hasTotp ? "◷" : "★"}</i>
                 </button>
               );
@@ -588,16 +592,7 @@ export function PopupApp() {
         <>
           <div className="vault-layout">
             <aside className="vault-sidebar" aria-label="Vault item list">
-              <div className="sidebar-heading"><div><span>Vault items</span><strong>{orderedItems.length} saved</strong></div><small>{pageHost(activePageUrl) ?? "All sites"}</small></div>
-              <div className="search-row">
-                <input aria-label="Search vault" autoFocus onChange={(event) => setQuery(event.target.value)} placeholder="Search vault" value={query} />
-                <button aria-label="Sync vault" disabled={busy} onClick={() => void sync()} type="button">↻</button>
-              </div>
-              <div className="quick-actions">
-                <button onClick={() => { setEditing(null); setGenerated(null); setView("editor"); }} type="button"><span>＋</span>New</button>
-                <button onClick={() => setView("generator")} type="button"><span>✦</span>Generate</button>
-                <button onClick={() => void enableCurrentSite()} type="button"><span>↻</span>Refresh</button>
-              </div>
+              <div className="sidebar-heading"><span>Vault items</span><small>{pageHost(activePageUrl) ?? "All sites"}</small></div>
               <section className="vault-items" aria-label="Vault items">
                 {orderedItems.length === 0 ? <div className="empty"><strong>No matching items</strong><p>Create a login or synchronize this account.</p></div> : null}
                 {orderedItems.map((item) => {
@@ -655,12 +650,39 @@ export function PopupApp() {
   );
 }
 
-function Header({ subtitle, onBack }: { subtitle: string; onBack?: (() => void) | undefined }) {
+function Header({
+  busy = false,
+  onBack,
+  onNew,
+  onQueryChange,
+  onSync,
+  query,
+  subtitle,
+}: {
+  busy?: boolean;
+  onBack?: (() => void) | undefined;
+  onNew?: (() => void) | undefined;
+  onQueryChange?: ((value: string) => void) | undefined;
+  onSync?: (() => void) | undefined;
+  query?: string | undefined;
+  subtitle?: string | undefined;
+}) {
   return (
     <header className="popup-header">
       {onBack === undefined ? <img alt="" className="logo" src="/icons/icon.svg" /> : <button aria-label="Back" className="back" onClick={onBack} type="button">‹</button>}
-      <div><strong>Hasilan Pass</strong><small>{subtitle}</small></div>
-      <span className="secure-dot" title="Local vault core active" />
+      <div className="popup-header-brand"><strong>Hasilan Pass</strong>{subtitle === undefined ? null : <small>{subtitle}</small>}</div>
+      {query === undefined || onQueryChange === undefined ? null : (
+        <label className="header-search">
+          <span className="sr-only">Search vault</span>
+          <input aria-label="Search vault" onChange={(event) => onQueryChange(event.target.value)} placeholder="Search vault" value={query} />
+        </label>
+      )}
+      {onNew === undefined || onSync === undefined ? null : (
+        <div className="header-actions">
+          <button aria-label="Sync vault" disabled={busy} onClick={onSync} title="Sync vault" type="button">↻</button>
+          <button aria-label="New item" onClick={onNew} title="New item" type="button">＋</button>
+        </div>
+      )}
     </header>
   );
 }
