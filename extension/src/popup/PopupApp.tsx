@@ -555,7 +555,7 @@ export function PopupApp() {
   }
 
   return (
-    <main className="popup">
+    <main className={`popup${view === "vault" ? " vault-popup" : ""}`}>
       <Header
         onBack={view === "vault" && selected === null ? undefined : clearSelection}
         subtitle={`${state.itemCount} encrypted item${state.itemCount === 1 ? "" : "s"}`}
