@@ -28,15 +28,15 @@
 }
 
 * { box-sizing: border-box; }
-html, body, #root { width: 760px; min-height: 600px; margin: 0; }
+html, body, #root { width: 600px; min-height: 430px; margin: 0; }
 body { overflow-x: hidden; background: var(--surface-canvas); }
 button, input, textarea { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .55; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-.popup { position: relative; display: flex; min-height: 600px; flex-direction: column; padding: 0 15px 14px; }
-.popup-loading { display: grid; min-height: 600px; place-content: center; justify-items: center; color: var(--muted); font-size: 11px; }
+.popup { position: relative; display: flex; min-height: 430px; flex-direction: column; padding: 0 15px 14px; }
+.popup-loading { display: grid; min-height: 430px; place-content: center; justify-items: center; color: var(--muted); font-size: 11px; }
 .popup-loading span { display: grid; width: 48px; height: 52px; place-items: center; border: 1px solid #56652f; border-radius: 13px 13px 16px 16px; color: var(--accent); font-size: 19px; font-weight: 900; }
 .popup-header { display: flex; height: 66px; align-items: center; gap: 11px; margin: 0 -15px 13px; padding: 0 16px; border-bottom: 1px solid #1f2c35; background: #0a1117; }
 .logo { display: block; width: 35px; height: 39px; border: 0; border-radius: 0; color: transparent; background: transparent; object-fit: contain; }
@@ -193,11 +193,10 @@ input:focus, textarea:focus { border-color: #67763d; outline: 2px solid rgb(220 
 .security-box p { margin: 5px 0 0; color: #829077; font-size: 8px; line-height: 1.5; }
 
 @media (max-width: 620px) {
-  html, body, #root { width: 380px; }
-  /* Browser action popups are often capped near 400px wide. Keep the list and
-     detail pane side-by-side at that size instead of pushing details below
-     the fold where they appear to be missing. */
-  .vault-layout { grid-template-columns: minmax(150px, 44%) minmax(0, 1fr); gap: 8px; }
+  /* Keep the two-pane popup wide enough for the detail view. A fixed 380px
+     popup leaves both the list and selected item unusably narrow. */
+  html, body, #root { width: 600px; min-width: 600px; }
+  .vault-layout { grid-template-columns: 250px minmax(0, 1fr); gap: 10px; }
   .vault-sidebar { padding: 8px; }
   .item-pane { padding: 10px; }
   .vault-row { grid-template-columns: 28px minmax(0, 1fr) auto; gap: 6px; padding: 7px; }
