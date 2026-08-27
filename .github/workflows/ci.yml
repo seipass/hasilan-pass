@@ -109,7 +109,7 @@ jobs:
           rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy
           rustup default 1.92.0
       - name: Cache Cargo registry, git sources, and Rust target
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -149,7 +149,7 @@ jobs:
           rustup toolchain install 1.92.0 --profile minimal --target wasm32-unknown-unknown
           rustup default 1.92.0
       - name: Cache Cargo registry, git sources, target, and wasm-bindgen
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -209,7 +209,7 @@ jobs:
           rustup toolchain install 1.92.0 --profile minimal --component clippy
           rustup default 1.92.0
       - name: Cache Cargo registry, git sources, and Rust target
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -272,7 +272,7 @@ jobs:
             printf 'CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER=%s\n' "$ndk_bin/x86_64-linux-android24-clang"
           } >> "$GITHUB_ENV"
       - name: Cache Cargo registry, git sources, and Android Rust targets
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -373,7 +373,7 @@ jobs:
           rustup toolchain install 1.92.0 --profile minimal
           rustup default 1.92.0
       - name: Cache Cargo registry, git sources, and Rust target
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -421,7 +421,7 @@ jobs:
           rustup toolchain install 1.92.0 --profile minimal
           rustup default 1.92.0
       - name: Cache Cargo registry, git sources, and Rust target
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -483,7 +483,7 @@ jobs:
           rustup toolchain install 1.92.0 --profile minimal --target wasm32-unknown-unknown
           rustup default 1.92.0
       - name: Cache Cargo registry, git sources, target, and wasm-bindgen
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -499,7 +499,7 @@ jobs:
             cargo install wasm-bindgen-cli --version 0.2.127 --locked
           fi
       - name: Cache Playwright browsers
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml') }}
@@ -586,7 +586,7 @@ jobs:
           rustup toolchain install 1.92.0 --profile minimal
           rustup default 1.92.0
       - name: Cache Cargo registry, git sources, and audit tools
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -631,7 +631,7 @@ jobs:
         run: |
           rustup toolchain install nightly-2026-08-01 --profile minimal
       - name: Cache fuzz Cargo registry, git sources, target, and cargo-fuzz
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
