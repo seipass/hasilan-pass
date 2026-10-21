@@ -34,7 +34,7 @@ rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] 
 tauri-plugin-single-instance = "2.4.3"
 
 [target.'cfg(target_os = "android")'.dependencies]
-jni = "0.21.1"
+jni = "0.22.4"
 
 [lints]
 workspace = true
