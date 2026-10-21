@@ -29,7 +29,7 @@ async-trait = "0.1.89"
 axum = { version = "0.8.4", features = ["macros", "multipart"] }
 base64 = "0.22.1"
 bip39 = { version = "2.2.0", default-features = false, features = ["std"] }
-cbc = { version = "0.1.2", features = ["alloc", "block-padding"] }
+cbc = { version = "0.2.1", features = ["alloc", "block-padding"] }
 chrono = { version = "0.4.41", features = ["serde"] }
 chacha20poly1305 = "0.10.1"
 clap = { version = "4.5.45", features = ["derive", "env"] }
